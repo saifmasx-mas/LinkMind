@@ -51,6 +51,8 @@ export default function Home() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
+  const [authNotice, setAuthNotice] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
 
   const [urlInput, setUrlInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -117,6 +119,33 @@ export default function Home() {
   // تسجيل الدخول أو إنشاء حساب
   const handleAuth = async (isSignUp: boolean) => {
     setAuthError('');
+    setAuthBusy(true);
+    if (!isSupabaseConfigured) {
+      setAuthError(
+        lang === 'ar'
+          ? 'أضف إعدادات Supabase إلى ملف .env.local ثم أعد تشغيل الخادم.'
+          : 'Add Supabase settings to .env.local, then restart the server.'
+      );
+      setAuthBusy(false);
+      return;
+    }
+    if (!email || !password) {
+      setAuthBusy(false);
+      return;
+    }
+
+    const { error } = isSignUp
+      ? await supabase.auth.signUp({ email, password })
+      : await supabase.auth.signInWithPassword({ email, password });
+
+    if (error) {
+      setAuthError(error.message);
+    }
+    setAuthBusy(false);
+  };
+
+  const handleGoogleAuth = async () => {
+    setAuthError('');
     if (!isSupabaseConfigured) {
       setAuthError(
         lang === 'ar'
@@ -125,14 +154,47 @@ export default function Home() {
       );
       return;
     }
-    if (!email || !password) return;
 
-    const { error } = isSignUp
-      ? await supabase.auth.signUp({ email, password })
-      : await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+      },
+    });
+
+    if (error) setAuthError(error.message);
+  };
+
+  const handleForgotPassword = async () => {
+    setAuthError('');
+    setAuthNotice('');
+    if (!isSupabaseConfigured) {
+      setAuthError(
+        lang === 'ar'
+          ? 'أضف إعدادات Supabase إلى ملف .env.local ثم أعد تشغيل الخادم.'
+          : 'Add Supabase settings to .env.local, then restart the server.'
+      );
+      return;
+    }
+    if (!email) {
+      setAuthError(
+        lang === 'ar'
+          ? 'أدخل بريدك الإلكتروني أولاً.'
+          : lang === 'tr'
+            ? 'Önce e-posta adresinizi girin.'
+            : 'Enter your email address first.'
+      );
+      return;
+    }
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/auth/reset-password`,
+    });
 
     if (error) {
       setAuthError(error.message);
+    } else {
+      setAuthNotice(t.resetEmailSent);
     }
   };
 
@@ -331,6 +393,11 @@ export default function Home() {
                 {authError}
               </div>
             )}
+            {authNotice && (
+              <div className="mb-4 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-300 text-center">
+                {authNotice}
+              </div>
+            )}
 
             <div className="space-y-4">
               <input
@@ -348,16 +415,39 @@ export default function Home() {
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500"
               />
 
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                className="block ms-auto text-xs text-indigo-400 hover:text-indigo-300 transition"
+              >
+                {t.forgotPassword}
+              </button>
+
               <div className="flex flex-col gap-2.5 pt-2">
                 <button
+                  type="button"
+                  onClick={handleGoogleAuth}
+                  className="w-full flex items-center justify-center gap-3 bg-white hover:bg-slate-100 text-slate-800 font-semibold py-3 rounded-xl transition cursor-pointer"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 24 24" className="w-5 h-5">
+                    <path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.4z"/>
+                    <path fill="#34A853" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2.1.9-3.4.9-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"/>
+                    <path fill="#FBBC05" d="M6.4 13.9A6 6 0 0 1 6.1 12c0-.7.1-1.3.3-1.9V7.5H3.1A10 10 0 0 0 2 12c0 1.6.4 3.1 1.1 4.5l3.3-2.6z"/>
+                    <path fill="#EA4335" d="M12 6c1.5 0 2.8.5 3.8 1.5l2.9-2.9A9.9 9.9 0 0 0 12 2a10 10 0 0 0-8.9 5.5l3.3 2.6C7.2 7.8 9.4 6 12 6z"/>
+                  </svg>
+                  <span>{t.googleBtn}</span>
+                </button>
+                <button
                   onClick={() => handleAuth(false)}
-                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 rounded-xl transition cursor-pointer"
+                  disabled={authBusy}
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-semibold py-3 rounded-xl transition cursor-pointer"
                 >
                   {t.loginBtn}
                 </button>
                 <button
                   onClick={() => handleAuth(true)}
-                  className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium py-3 rounded-xl transition cursor-pointer"
+                  disabled={authBusy}
+                  className="w-full bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-slate-200 font-medium py-3 rounded-xl transition cursor-pointer"
                 >
                   {t.signupBtn}
                 </button>
