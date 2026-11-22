@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import { GoogleGenAI, Type } from '@google/genai';
+import { fetchPublicUrl } from '@/lib/safe-fetch';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
@@ -17,7 +18,11 @@ export async function POST(req: Request) {
     let bodyText = '';
     let image = '';
 
-    const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+    const parsedUrl = new URL(url);
+    const isYouTube =
+      parsedUrl.hostname === 'youtu.be' ||
+      parsedUrl.hostname === 'youtube.com' ||
+      parsedUrl.hostname.endsWith('.youtube.com');
 
     if (isYouTube) {
       try {
@@ -36,19 +41,10 @@ export async function POST(req: Request) {
 
     if (!rawTitle) {
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 6000);
+        const response = await fetchPublicUrl(url);
 
-        const response = await fetch(url, {
-          signal: controller.signal,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-          },
-        });
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          const html = await response.text();
+        if (response.status >= 200 && response.status < 300) {
+          const html = response.body.toString('utf8');
           const $ = cheerio.load(html);
 
           rawTitle =

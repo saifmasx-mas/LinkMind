@@ -29,6 +29,10 @@ export const translations = {
     updatePasswordBtn: 'تحديث كلمة المرور',
     resetEmailSent: 'تم إرسال رابط إعادة تعيين كلمة المرور إلى بريدك الإلكتروني.',
     passwordUpdated: 'تم تحديث كلمة المرور بنجاح.',
+    telegramBot: 'ربط Telegram',
+    telegramConnecting: 'جاري فتح Telegram...',
+    telegramSignInRequired: 'سجّل الدخول إلى LinkMind أولاً.',
+    telegramLinkFailed: 'تعذر إنشاء رابط ربط Telegram.',
     logoutBtn: 'خروج',
     categories: {
       All: 'الكل',
@@ -66,6 +70,10 @@ export const translations = {
     updatePasswordBtn: 'Şifreyi güncelle',
     resetEmailSent: 'Şifre sıfırlama bağlantısı e-posta adresinize gönderildi.',
     passwordUpdated: 'Şifreniz başarıyla güncellendi.',
+    telegramBot: 'Telegram’ı bağla',
+    telegramConnecting: 'Telegram açılıyor...',
+    telegramSignInRequired: 'Önce LinkMind hesabınıza giriş yapın.',
+    telegramLinkFailed: 'Telegram bağlantısı oluşturulamadı.',
     logoutBtn: 'Çıkış',
     categories: {
       All: 'Tümü',
@@ -103,6 +111,10 @@ export const translations = {
     updatePasswordBtn: 'Update password',
     resetEmailSent: 'A password reset link has been sent to your email.',
     passwordUpdated: 'Your password was updated successfully.',
+    telegramBot: 'Connect Telegram',
+    telegramConnecting: 'Opening Telegram...',
+    telegramSignInRequired: 'Sign in to LinkMind first.',
+    telegramLinkFailed: 'Could not create a Telegram link.',
     logoutBtn: 'Logout',
     categories: {
       All: 'All',

@@ -1,0 +1,255 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { NextResponse } from 'next/server';
+import * as cheerio from 'cheerio';
+import { GoogleGenAI, Type } from '@google/genai';
+import { createSupabaseAdminClient } from '@/lib/supabase-admin';
+import { fetchPublicUrl } from '@/lib/safe-fetch';
+
+export const runtime = 'nodejs';
+
+interface TelegramMessage {
+  chat?: { id?: number };
+  text?: string;
+}
+
+async function sendTelegramMessage(chatId: number, text: string, botToken: string) {
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Telegram sendMessage failed with status ${response.status}`);
+  }
+}
+
+function isValidHttpUrl(value: string): URL | null {
+  try {
+    const url = new URL(value);
+    if (
+      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+      url.username ||
+      url.password ||
+      (url.port &&
+        ((url.protocol === 'http:' && url.port !== '80') ||
+          (url.protocol === 'https:' && url.port !== '443')))
+    ) {
+      return null;
+    }
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+export async function POST(request: Request) {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET?.trim();
+  const receivedSecret = request.headers.get('x-telegram-bot-api-secret-token') ?? '';
+
+  if (!botToken || !webhookSecret) {
+    return NextResponse.json({ error: 'Telegram webhook is not configured' }, { status: 503 });
+  }
+  const receivedBytes = Buffer.from(receivedSecret);
+  const expectedBytes = Buffer.from(webhookSecret);
+  if (
+    receivedBytes.length !== expectedBytes.length ||
+    !timingSafeEqual(receivedBytes, expectedBytes)
+  ) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  let update: { message?: TelegramMessage };
+  try {
+    update = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+
+  const message = update.message;
+  const chatId = message?.chat?.id;
+  const text = message?.text?.trim();
+  if (typeof chatId !== 'number' || !Number.isSafeInteger(chatId) || !text) {
+    return NextResponse.json({ ok: true });
+  }
+
+  try {
+    const admin = createSupabaseAdminClient();
+
+    if (/^\/start(?:@\w+)?(?:\s|$)/.test(text)) {
+      const token = text.split(/\s+/)[1];
+      if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
+        await sendTelegramMessage(
+          chatId,
+          'أهلاً بك في LinkMind! افتح الموقع واضغط على زر ربط Telegram لإنشاء رابط آمن.',
+          botToken
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      const tokenHash = createHash('sha256').update(token).digest('hex');
+      const { data: tokenData, error: tokenError } = await admin
+        .from('telegram_link_tokens')
+        .delete()
+        .eq('token_hash', tokenHash)
+        .gt('expires_at', new Date().toISOString())
+        .select('user_id')
+        .maybeSingle();
+
+      if (tokenError) {
+        console.error('Failed to consume Telegram link token:', tokenError.message);
+        return NextResponse.json({ error: 'Could not verify Telegram link' }, { status: 500 });
+      }
+      if (!tokenData) {
+        await sendTelegramMessage(
+          chatId,
+          'انتهت صلاحية رابط الربط أو استُخدم من قبل. أنشئ رابطاً جديداً من LinkMind.',
+          botToken
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      const { error: linkError } = await admin
+        .from('telegram_links')
+        .upsert({ chat_id: chatId, user_id: tokenData.user_id }, { onConflict: 'chat_id' });
+
+      if (linkError) {
+        console.error('Failed to link Telegram account:', linkError.message);
+        return NextResponse.json({ error: 'Could not link Telegram account' }, { status: 500 });
+      }
+
+      await sendTelegramMessage(
+        chatId,
+        '✅ تم ربط حسابك بنجاح! أرسل رابطاً عاماً لحفظه في مكتبتك.',
+        botToken
+      );
+      return NextResponse.json({ ok: true });
+    }
+
+    const { data: linkData, error: lookupError } = await admin
+      .from('telegram_links')
+      .select('user_id')
+      .eq('chat_id', chatId)
+      .maybeSingle();
+
+    if (lookupError) {
+      console.error('Failed to look up Telegram link:', lookupError.message);
+      return NextResponse.json({ error: 'Could not look up Telegram account' }, { status: 500 });
+    }
+    if (!linkData) {
+      await sendTelegramMessage(
+        chatId,
+        '⚠️ اربط حسابك من داخل موقع LinkMind قبل إرسال الروابط.',
+        botToken
+      );
+      return NextResponse.json({ ok: true });
+    }
+
+    const urlMatch = text.match(/https?:\/\/[^\s<>]+/i);
+    const candidateUrl = urlMatch?.[0].replace(/[),.!?]+$/, '');
+    const url = candidateUrl ? isValidHttpUrl(candidateUrl) : null;
+    if (!url) {
+      await sendTelegramMessage(chatId, '📎 أرسل رابطاً عاماً صحيحاً يبدأ بـ http أو https.', botToken);
+      return NextResponse.json({ ok: true });
+    }
+
+    await sendTelegramMessage(chatId, '⏳ جاري تحليل الرابط وحفظه...', botToken);
+
+    let rawTitle = '';
+    let rawDescription = '';
+    let image = '';
+
+    if (url.hostname === 'youtube.com' || url.hostname.endsWith('.youtube.com') || url.hostname === 'youtu.be') {
+      const ytResponse = await fetch(
+        `https://www.youtube.com/oembed?url=${encodeURIComponent(url.toString())}&format=json`,
+        { signal: AbortSignal.timeout(8_000) }
+      );
+      if (ytResponse.ok) {
+        const ytData = await ytResponse.json();
+        rawTitle = ytData.title || 'YouTube Video';
+        rawDescription = `قناة: ${ytData.author_name || 'YouTube'}`;
+        image = ytData.thumbnail_url || '';
+      }
+    }
+
+    if (!rawTitle) {
+      const pageResponse = await fetchPublicUrl(url);
+      if (pageResponse.status >= 200 && pageResponse.status < 300) {
+        const $ = cheerio.load(pageResponse.body.toString('utf8'));
+        rawTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || url.toString();
+        rawDescription = $('meta[property="og:description"]').attr('content') || '';
+        image = $('meta[property="og:image"]').attr('content') || '';
+      }
+    }
+
+    const aiKey = process.env.GEMINI_API_KEY?.trim();
+    let finalTitle = (rawTitle || url.toString()).trim().slice(0, 200);
+    let finalSummary = (rawDescription || 'Saved via Telegram Bot').trim().slice(0, 500);
+    let finalCategory = 'General';
+    let embedding: number[] | null = null;
+
+    if (aiKey) {
+      try {
+        const ai = new GoogleGenAI({ apiKey: aiKey });
+        const aiResponse = await ai.models.generateContent({
+          model: 'gemini-2.0-flash',
+          contents: `Summarize this link in Arabic in 2 concise sentences and classify it into ONLY one of: "Programming", "Learning", "Business", "General".\nTitle: ${finalTitle}\nDesc: ${rawDescription}\nURL: ${url.toString()}`,
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                summary: { type: Type.STRING },
+                category: { type: Type.STRING },
+              },
+              required: ['title', 'summary', 'category'],
+            },
+          },
+        });
+        const parsed = JSON.parse(aiResponse.text || '{}');
+        finalTitle = String(parsed.title || finalTitle).slice(0, 200);
+        finalSummary = String(parsed.summary || finalSummary).slice(0, 500);
+        if (['Programming', 'Learning', 'Business', 'General'].includes(parsed.category)) {
+          finalCategory = parsed.category;
+        }
+
+        const embeddingResponse = await ai.models.embedContent({
+          model: 'text-embedding-004',
+          contents: `${finalTitle}. ${finalSummary}`,
+        });
+        embedding = embeddingResponse.embeddings?.[0]?.values || null;
+      } catch (error) {
+        console.error('Telegram link analysis failed:', error);
+      }
+    }
+
+    const { error: insertError } = await admin.from('bookmarks').insert({
+      user_id: linkData.user_id,
+      url: url.toString(),
+      title: finalTitle,
+      summary: finalSummary,
+      category: finalCategory,
+      image_url: image,
+      embedding,
+    });
+
+    if (insertError) {
+      console.error('Failed to save Telegram bookmark:', insertError.message);
+      await sendTelegramMessage(chatId, 'تعذر حفظ الرابط حالياً. حاول مرة أخرى لاحقاً.', botToken);
+      return NextResponse.json({ error: 'Could not save bookmark' }, { status: 500 });
+    }
+
+    await sendTelegramMessage(
+      chatId,
+      `✅ تم الحفظ في LinkMind!\n\n📌 ${finalTitle}\n🗂 التصنيف: ${finalCategory}\n📝 ${finalSummary}`,
+      botToken
+    );
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error('Telegram webhook processing failed:', error);
+    return NextResponse.json({ error: 'Telegram update could not be processed' }, { status: 500 });
+  }
+}

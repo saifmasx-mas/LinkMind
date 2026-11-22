@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { translations, Language } from '@/lib/translations';
-import { isSupabaseConfigured, supabase } from '@/lib/supabase';
+import { supabase } from '@/lib/supabase';
 import { User } from '@supabase/supabase-js';
 import {
   Brain,
@@ -16,6 +16,7 @@ import {
   X,
   LogOut,
   Lock,
+  Send,
 } from 'lucide-react';
 
 interface Bookmark {
@@ -51,8 +52,8 @@ export default function Home() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
-  const [authNotice, setAuthNotice] = useState('');
-  const [authBusy, setAuthBusy] = useState(false);
+  const [telegramBusy, setTelegramBusy] = useState(false);
+  const [telegramError, setTelegramError] = useState('');
 
   const [urlInput, setUrlInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -69,16 +70,6 @@ export default function Home() {
 
   // التحقق من حالة تسجيل الدخول عند فتح التطبيق
   useEffect(() => {
-    if (!isSupabaseConfigured) {
-      setAuthError(
-        lang === 'ar'
-          ? 'أضف إعدادات Supabase إلى ملف .env.local ثم أعد تشغيل الخادم.'
-          : 'Add Supabase settings to .env.local, then restart the server.'
-      );
-      setAuthLoading(false);
-      return;
-    }
-
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       setAuthLoading(false);
@@ -116,23 +107,10 @@ export default function Home() {
     }
   };
 
-  // تسجيل الدخول أو إنشاء حساب
+  // تسجيل الدخول أو إنشاء حساب بالبريد الإلكتروني
   const handleAuth = async (isSignUp: boolean) => {
     setAuthError('');
-    setAuthBusy(true);
-    if (!isSupabaseConfigured) {
-      setAuthError(
-        lang === 'ar'
-          ? 'أضف إعدادات Supabase إلى ملف .env.local ثم أعد تشغيل الخادم.'
-          : 'Add Supabase settings to .env.local, then restart the server.'
-      );
-      setAuthBusy(false);
-      return;
-    }
-    if (!email || !password) {
-      setAuthBusy(false);
-      return;
-    }
+    if (!email || !password) return;
 
     const { error } = isSignUp
       ? await supabase.auth.signUp({ email, password })
@@ -141,60 +119,47 @@ export default function Home() {
     if (error) {
       setAuthError(error.message);
     }
-    setAuthBusy(false);
   };
 
-  const handleGoogleAuth = async () => {
+  // تسجيل الدخول عبر حساب Google
+  const handleGoogleLogin = async () => {
     setAuthError('');
-    if (!isSupabaseConfigured) {
-      setAuthError(
-        lang === 'ar'
-          ? 'أضف إعدادات Supabase إلى ملف .env.local ثم أعد تشغيل الخادم.'
-          : 'Add Supabase settings to .env.local, then restart the server.'
-      );
-      return;
-    }
-
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: window.location.origin,
       },
     });
-
-    if (error) setAuthError(error.message);
-  };
-
-  const handleForgotPassword = async () => {
-    setAuthError('');
-    setAuthNotice('');
-    if (!isSupabaseConfigured) {
-      setAuthError(
-        lang === 'ar'
-          ? 'أضف إعدادات Supabase إلى ملف .env.local ثم أعد تشغيل الخادم.'
-          : 'Add Supabase settings to .env.local, then restart the server.'
-      );
-      return;
-    }
-    if (!email) {
-      setAuthError(
-        lang === 'ar'
-          ? 'أدخل بريدك الإلكتروني أولاً.'
-          : lang === 'tr'
-            ? 'Önce e-posta adresinizi girin.'
-            : 'Enter your email address first.'
-      );
-      return;
-    }
-
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/reset-password`,
-    });
-
     if (error) {
       setAuthError(error.message);
-    } else {
-      setAuthNotice(t.resetEmailSent);
+    }
+  };
+
+  const handleTelegramLink = async () => {
+    setTelegramError('');
+    setTelegramBusy(true);
+    try {
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !session) {
+        throw new Error(t.telegramSignInRequired);
+      }
+
+      const response = await fetch('/api/telegram/link', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const result = await response.json();
+      if (!response.ok || typeof result.url !== 'string') {
+        throw new Error(result.error || t.telegramLinkFailed);
+      }
+
+      window.location.assign(result.url);
+    } catch (error) {
+      setTelegramError(
+        error instanceof Error ? error.message : t.telegramLinkFailed
+      );
+    } finally {
+      setTelegramBusy(false);
     }
   };
 
@@ -358,15 +323,32 @@ export default function Home() {
             </div>
 
             {user && (
-              <button
-                onClick={handleLogout}
-                className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-rose-950/60 text-slate-300 hover:text-rose-300 border border-slate-700 px-3 py-2 rounded-lg transition cursor-pointer"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>{t.logoutBtn}</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleTelegramLink}
+                  disabled={telegramBusy}
+                  className="flex items-center gap-1.5 text-xs bg-sky-600/20 hover:bg-sky-600/30 disabled:opacity-60 text-sky-400 border border-sky-500/30 px-3 py-2 rounded-lg transition"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>{telegramBusy ? t.telegramConnecting : t.telegramBot}</span>
+                </button>
+
+                <button
+                  onClick={handleLogout}
+                  className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-rose-950/60 text-slate-300 hover:text-rose-300 border border-slate-700 px-3 py-2 rounded-lg transition cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>{t.logoutBtn}</span>
+                </button>
+              </>
             )}
           </div>
+          {telegramError && (
+            <p role="alert" className="mt-2 text-xs text-rose-300 text-end">
+              {telegramError}
+            </p>
+          )}
         </div>
       </header>
 
@@ -393,11 +375,6 @@ export default function Home() {
                 {authError}
               </div>
             )}
-            {authNotice && (
-              <div className="mb-4 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-300 text-center">
-                {authNotice}
-              </div>
-            )}
 
             <div className="space-y-4">
               <input
@@ -415,43 +392,52 @@ export default function Home() {
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500"
               />
 
-              <button
-                type="button"
-                onClick={handleForgotPassword}
-                className="block ms-auto text-xs text-indigo-400 hover:text-indigo-300 transition"
-              >
-                {t.forgotPassword}
-              </button>
-
               <div className="flex flex-col gap-2.5 pt-2">
                 <button
-                  type="button"
-                  onClick={handleGoogleAuth}
-                  className="w-full flex items-center justify-center gap-3 bg-white hover:bg-slate-100 text-slate-800 font-semibold py-3 rounded-xl transition cursor-pointer"
-                >
-                  <svg aria-hidden="true" viewBox="0 0 24 24" className="w-5 h-5">
-                    <path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.4z"/>
-                    <path fill="#34A853" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2.1.9-3.4.9-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"/>
-                    <path fill="#FBBC05" d="M6.4 13.9A6 6 0 0 1 6.1 12c0-.7.1-1.3.3-1.9V7.5H3.1A10 10 0 0 0 2 12c0 1.6.4 3.1 1.1 4.5l3.3-2.6z"/>
-                    <path fill="#EA4335" d="M12 6c1.5 0 2.8.5 3.8 1.5l2.9-2.9A9.9 9.9 0 0 0 12 2a10 10 0 0 0-8.9 5.5l3.3 2.6C7.2 7.8 9.4 6 12 6z"/>
-                  </svg>
-                  <span>{t.googleBtn}</span>
-                </button>
-                <button
                   onClick={() => handleAuth(false)}
-                  disabled={authBusy}
-                  className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-semibold py-3 rounded-xl transition cursor-pointer"
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 rounded-xl transition cursor-pointer"
                 >
                   {t.loginBtn}
                 </button>
                 <button
                   onClick={() => handleAuth(true)}
-                  disabled={authBusy}
-                  className="w-full bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-slate-200 font-medium py-3 rounded-xl transition cursor-pointer"
+                  className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium py-3 rounded-xl transition cursor-pointer"
                 >
                   {t.signupBtn}
                 </button>
               </div>
+
+              <div className="relative my-3 flex items-center justify-center">
+                <span className="border-t border-slate-800 w-full"></span>
+                <span className="bg-slate-900 px-3 text-xs text-slate-500">OR</span>
+                <span className="border-t border-slate-800 w-full"></span>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                className="w-full bg-white hover:bg-slate-100 text-slate-900 font-semibold py-3 rounded-xl flex items-center justify-center gap-2.5 transition cursor-pointer shadow"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24">
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96z"
+                  />
+                </svg>
+                <span>{t.googleBtn}</span>
+              </button>
             </div>
           </div>
         </main>
