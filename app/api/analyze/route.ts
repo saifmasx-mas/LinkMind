@@ -35,11 +35,11 @@ async function resolveShortUrl(url: string): Promise<string> {
 }
 
 async function generateWithFallback(contentsPayload: any, config: any) {
-  const models = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.8-flash-lite'];
+  const models = ['gemini-3.8-flash', 'gemini-3.8-flash-lite'];
   let lastError: any;
 
   for (const modelName of models) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         return await ai.models.generateContent({
           model: modelName,
@@ -50,10 +50,10 @@ async function generateWithFallback(contentsPayload: any, config: any) {
         lastError = err;
         const msg = String(err?.message || '');
         if (msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('429')) {
-          await new Promise((r) => setTimeout(r, 1200));
+          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
           continue;
         }
-        throw err;
+        break;
       }
     }
   }
