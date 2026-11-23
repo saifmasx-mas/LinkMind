@@ -1,13 +1,8 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createSupabaseAdminClient } from '@/lib/supabase-admin';
 import * as cheerio from 'cheerio';
 import { YoutubeTranscript } from 'youtube-transcript';
 import { GoogleGenAI, Type } from '@google/genai';
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
@@ -38,6 +33,13 @@ export async function POST(req: Request) {
       );
     }
 
+    const isBookOrDoc = Boolean(bookText || bookBase64);
+    if (isBookOrDoc && !process.env.GEMINI_API_KEY) {
+      return NextResponse.json({ error: 'Document summarization is not configured' }, { status: 503 });
+    }
+
+    const supabaseAdmin = createSupabaseAdminClient();
+
     // 1. التحقق من رصيد المستخدم في Supabase
     let { data: profile } = await supabaseAdmin
       .from('user_profiles')
@@ -67,10 +69,9 @@ export async function POST(req: Request) {
     // 2. تجهيز المحتوى
     let rawTitle = bookTitle || '';
     let rawDescription = '';
-    let bodyContent = bookText ? String(bookText).slice(0, 30000) : '';
+    let bodyContent = bookText ? String(bookText).slice(0, 100000) : '';
     let image = '';
     let finalUrl = url;
-    const isBookOrDoc = Boolean(bookText || bookBase64);
 
     if (isBookOrDoc) {
       finalUrl = `file://${bookType || 'pdf'}/${encodeURIComponent(bookTitle || 'Book')}`;
