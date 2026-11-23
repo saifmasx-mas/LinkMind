@@ -4,6 +4,9 @@ import * as cheerio from 'cheerio';
 import { YoutubeTranscript } from 'youtube-transcript';
 import { GoogleGenAI, Type } from '@google/genai';
 
+// رفع المهلة القصوى للسيرفر في Vercel لتجنب خطأ 504 Timeout
+export const maxDuration = 60;
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -18,43 +21,43 @@ function extractYouTubeId(url: string): string | null {
   return match ? match[1] : null;
 }
 
+// فك اختصار روابط تيك توك القصيرة بمهلة 3 ثوانٍ كحد أقصى
 async function resolveShortUrl(url: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
   try {
     const res = await fetch(url, {
       method: 'GET',
       redirect: 'follow',
+      signal: controller.signal,
       headers: {
         'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
       },
     });
     return res.url || url;
   } catch {
     return url;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-async function generateWithFallback(contentsPayload: any, config: any) {
-  const models = ['gemini-3.8-flash', 'gemini-3.8-flash-lite'];
+// البدء بالنموذج الأسرع (gemini-3.8-flash-lite) لتجنب 503 و 504
+async function generateFast(contentsPayload: any, config: any) {
+  const models = ['gemini-3.8-flash-lite', 'gemini-3.8-flash'];
   let lastError: any;
 
   for (const modelName of models) {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        return await ai.models.generateContent({
-          model: modelName,
-          contents: contentsPayload,
-          config,
-        });
-      } catch (err: any) {
-        lastError = err;
-        const msg = String(err?.message || '');
-        if (msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('429')) {
-          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
-          continue;
-        }
-        break;
-      }
+    try {
+      return await ai.models.generateContent({
+        model: modelName,
+        contents: contentsPayload,
+        config,
+      });
+    } catch (err: any) {
+      lastError = err;
+      await new Promise((r) => setTimeout(r, 600));
     }
   }
   throw lastError;
@@ -108,7 +111,7 @@ export async function POST(req: Request) {
 
     let rawTitle = bookTitle || '';
     let rawDescription = '';
-    let bodyContent = bookText ? String(bookText).slice(0, 30000) : '';
+    let bodyContent = bookText ? String(bookText).slice(0, 14000) : '';
     let image = '';
     let finalUrl = url.trim();
     const isBookOrDoc = Boolean(bookText || bookBase64);
@@ -137,7 +140,7 @@ export async function POST(req: Request) {
           bodyContent = transcriptItems
             .map((item) => item.text)
             .join(' ')
-            .slice(0, 18000);
+            .slice(0, 14000);
         } catch {}
       } else if (lowerUrl.includes('tiktok.com')) {
         try {
@@ -158,34 +161,27 @@ export async function POST(req: Request) {
             image = ttData.thumbnail_url || '';
             bodyContent = rawDescription;
           } else {
-            const fallbackRes = await fetch(
-              `https://www.tiktok.com/oembed?url=${encodeURIComponent(finalUrl)}`
-            );
-            if (fallbackRes.ok) {
-              const ttData = await fallbackRes.json();
-              rawTitle = ttData.title || `TikTok by ${ttData.author_name || 'Creator'}`;
-              rawDescription = `TikTok Video by ${ttData.author_name || ''}: ${ttData.title || ''}`;
-              image = ttData.thumbnail_url || '';
-              bodyContent = rawDescription;
-            } else {
-              rawTitle = 'TikTok Video';
-              rawDescription = `Saved TikTok video link: ${finalUrl}`;
-              bodyContent = rawDescription;
-            }
+            rawTitle = 'TikTok Video';
+            rawDescription = `TikTok Video URL: ${cleanTikTokUrl}`;
+            bodyContent = rawDescription;
           }
         } catch {
           rawTitle = 'TikTok Video';
-          rawDescription = `Saved TikTok video link: ${finalUrl}`;
+          rawDescription = `TikTok Video URL: ${finalUrl}`;
           bodyContent = rawDescription;
         }
       } else {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4000);
         try {
           const res = await fetch(finalUrl, {
+            signal: controller.signal,
             headers: {
               'User-Agent':
                 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
             },
           });
+
           if (res.ok) {
             const html = await res.text();
             const $ = cheerio.load(html);
@@ -206,14 +202,16 @@ export async function POST(req: Request) {
               .get()
               .join(' ')
               .replace(/\s+/g, ' ')
-              .slice(0, 18000);
+              .slice(0, 14000);
           } else {
             rawTitle = finalUrl;
-            rawDescription = `Saved link from ${new URL(finalUrl).hostname}`;
+            rawDescription = `Saved link: ${finalUrl}`;
           }
         } catch {
           rawTitle = finalUrl;
           rawDescription = `Saved web resource: ${finalUrl}`;
+        } finally {
+          clearTimeout(timer);
         }
       }
     }
@@ -233,21 +231,21 @@ export async function POST(req: Request) {
 
     if (process.env.GEMINI_API_KEY) {
       const promptText = isBookOrDoc
-        ? `Analyze this book/document thoroughly and extract:
-1. A clean, accurate book/document title.
-2. A rich 3-sentence executive summary capturing the core thesis and main ideas of the book.
-3. Category: choose ONLY one of "Programming", "Learning", "Business", "General".
-4. Actionable Key Ideas & Checklist: extract 6 to 10 core principles, key takeaways, and practical actionable steps from the book so the reader can apply its wisdom immediately.
+        ? `Summarize this book/document quickly and extract:
+1. A clean book/document title.
+2. A concise 3-sentence summary of the core thesis and main ideas.
+3. Category: ONLY one of "Programming", "Learning", "Business", "General".
+4. Actionable Checklist: 5 to 8 key principles and practical steps from the book.
 
 ${langInstruction}
 
 Title: ${rawTitle}
 ${bodyContent ? `Content: ${bodyContent}` : ''}`
-        : `Analyze this video/post/article and extract:
+        : `Summarize this video/post/article and extract:
 1. A clean, concise title.
 2. A 2-sentence executive summary.
-3. Category: choose ONLY one of "Programming", "Learning", "Business", "General".
-4. Actionable Checklist: extract 4 to 8 clear, practical step-by-step instructions or key takeaways based on the title, description, and content so a user can apply what is taught immediately.
+3. Category: ONLY one of "Programming", "Learning", "Business", "General".
+4. Actionable Checklist: 4 to 7 practical step-by-step instructions or key takeaways.
 
 ${langInstruction}
 
@@ -268,7 +266,7 @@ URL: ${finalUrl}`;
           ]
         : promptText;
 
-      const aiRes = await generateWithFallback(contentsPayload, {
+      const aiRes = await generateFast(contentsPayload, {
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,

@@ -1,4 +1,3 @@
-
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -243,7 +242,7 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // إضافة رابط ويب أو يوتيوب
+  // إضافة رابط ويب أو يوتيوب أو تيك توك
   const handleAddBookmark = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!urlInput.trim() || !user) return;
@@ -264,6 +263,11 @@ export default function Home() {
           userId: user.id,
         }),
       });
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error(`Server returned status ${res.status}`);
+      }
 
       const data = await res.json();
 
@@ -297,14 +301,15 @@ export default function Home() {
       } else {
         alert(data.error || (lang === 'ar' ? 'تأكد من صحة الرابط!' : 'Please enter a valid URL!'));
       }
-    } catch {
-      alert('Error processing link');
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : '';
+      alert((lang === 'ar' ? 'تعذر حفظ الرابط: ' : 'Error processing link: ') + errorMessage);
     } finally {
       setLoading(false);
     }
   };
 
-  // تحويل الملف إلى Base64 لإرساله مباشرة إلى Gemini
+  // تحويل الملف إلى Base64 فقط للكتب المصورة الصغيرة
   const fileToBase64 = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -317,7 +322,7 @@ export default function Home() {
       reader.readAsDataURL(file);
     });
 
-  // رفع كتاب PDF أو مستند Word / TXT وتلخيصه لأفكار
+  // رفع كتاب PDF أو مستند Word / TXT وتلخيصه لأفكار بسرعة فائقة
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
@@ -339,7 +344,42 @@ export default function Home() {
       };
 
       if (lower.endsWith('.pdf')) {
-        if (file.size <= 3.2 * 1024 * 1024) {
+        // 1. استخراج النص محلياً في المتصفح بدون Worker خارجي لتجنب 504
+        let extractedText = '';
+        try {
+          const pdfjsLib = await import('pdfjs-dist');
+          pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+            'pdfjs-dist/build/pdf.worker.mjs',
+            import.meta.url
+          ).toString();
+          const arrayBuffer = await file.arrayBuffer();
+          const loadingTask = pdfjsLib.getDocument({
+            data: arrayBuffer,
+            useWorkerFetch: false,
+          });
+          try {
+            const pdf = await loadingTask.promise;
+            const maxPages = Math.min(pdf.numPages, 25);
+            for (let i = 1; i <= maxPages; i++) {
+              const page = await pdf.getPage(i);
+              const content = await page.getTextContent();
+              extractedText +=
+                content.items.map((item) => ('str' in item ? item.str : '')).join(' ') + ' ';
+              if (extractedText.length > 14000) break;
+            }
+          } finally {
+            await loadingTask.destroy();
+          }
+          extractedText = extractedText.replace(/\s+/g, ' ').trim();
+        } catch (error) {
+          console.error('PDF text extraction failed:', error);
+        }
+
+        if (extractedText.length >= 80) {
+          payload.bookText = extractedText.slice(0, 14000);
+          payload.bookType = 'pdf';
+        } else if (file.size <= 1.8 * 1024 * 1024) {
+          // 2. إذا كان PDF مصوراً (Scan) وحجمه مناسب نرسله كـ Base64
           const base64 = await fileToBase64(file);
           payload.bookBase64 = base64;
           payload.bookMimeType = 'application/pdf';
@@ -347,8 +387,8 @@ export default function Home() {
         } else {
           alert(
             lang === 'ar'
-              ? 'حجم ملف PDF كبير جداً (الحد الأقصى 3.2 ميجابايت للرفع المباشر). جرب ملفاً أصغر أو قسّم الكتاب.'
-              : 'PDF file exceeds 3.2MB direct upload limit.'
+              ? 'هذا الكتاب مصوّر (Scan) وحجمه كبير (أكثر من 1.8MB). جرب كتاباً نصياً أو ملفاً أصغر حجماً.'
+              : 'Scanned PDF is larger than 1.8MB. Please use a text-based or smaller PDF.'
           );
           return;
         }
@@ -361,7 +401,7 @@ export default function Home() {
           alert(lang === 'ar' ? 'ملف Word فارغ!' : 'Word document is empty!');
           return;
         }
-        payload.bookText = text.slice(0, 30000);
+        payload.bookText = text.slice(0, 14000);
         payload.bookType = 'word';
       } else {
         const text = (await file.text()).replace(/\s+/g, ' ').trim();
@@ -369,7 +409,7 @@ export default function Home() {
           alert(lang === 'ar' ? 'الملف النصي فارغ!' : 'Text file is empty!');
           return;
         }
-        payload.bookText = text.slice(0, 30000);
+        payload.bookText = text.slice(0, 14000);
         payload.bookType = 'word';
       }
 
