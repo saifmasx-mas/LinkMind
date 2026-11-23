@@ -1,41 +1,65 @@
 import { NextResponse } from 'next/server';
-import { createSupabaseAdminClient } from '@/lib/supabase-admin';
-import { generateContentWithFallback } from '@/lib/gemini';
+import { createClient } from '@supabase/supabase-js';
 import * as cheerio from 'cheerio';
 import { YoutubeTranscript } from 'youtube-transcript';
-import { ApiError, GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 function extractYouTubeId(url: string): string | null {
-  const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
+  const regExp =
+    /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
   const match = url.match(regExp);
   return match ? match[1] : null;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+// فك اختصار روابط المشاركة القصيرة (مثل vm.tiktok.com أو vt.tiktok.com)
+async function resolveShortUrl(url: string): Promise<string> {
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      },
+    });
+    return res.url || url;
+  } catch {
+    return url;
+  }
 }
 
-function parseAnalysisResponse(text: string | undefined): Record<string, unknown> {
-  const response = (text || '').trim().replace(/^```(?:json)?\s*|\s*```$/gi, '');
-  const candidates = [response];
-  const objectStart = response.indexOf('{');
-  const objectEnd = response.lastIndexOf('}');
-  if (objectStart >= 0 && objectEnd > objectStart) {
-    candidates.push(response.slice(objectStart, objectEnd + 1));
-  }
+// التبديل التلقائي وإعادة المحاولة لتجاوز ضغط السيرفر (503 UNAVAILABLE)
+async function generateWithFallback(contentsPayload: any, config: any) {
+  const models = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.8-flash-lite'];
+  let lastError: any;
 
-  for (const candidate of candidates) {
-    try {
-      const parsed: unknown = JSON.parse(candidate);
-      if (isRecord(parsed)) return parsed;
-    } catch {
-      // Try the next candidate, which may contain a JSON object wrapped in prose.
+  for (const modelName of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await ai.models.generateContent({
+          model: modelName,
+          contents: contentsPayload,
+          config,
+        });
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err?.message || '');
+        if (msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('429')) {
+          await new Promise((r) => setTimeout(r, 1200));
+          continue;
+        }
+        throw err;
+      }
     }
   }
-
-  throw new Error('Gemini returned an invalid structured response');
+  throw lastError;
 }
 
 export async function POST(req: Request) {
@@ -58,13 +82,6 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-
-    const isBookOrDoc = Boolean(bookText || bookBase64);
-    if (isBookOrDoc && !process.env.GEMINI_API_KEY) {
-      return NextResponse.json({ error: 'Document summarization is not configured' }, { status: 503 });
-    }
-
-    const supabaseAdmin = createSupabaseAdminClient();
 
     // 1. التحقق من رصيد المستخدم في Supabase
     let { data: profile } = await supabaseAdmin
@@ -92,22 +109,25 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. تجهيز المحتوى
+    // 2. تجهيز المحتوى حسب نوع المصدر (كتاب / يوتيوب / تيك توك / موقع ويب)
     let rawTitle = bookTitle || '';
     let rawDescription = '';
-    let bodyContent = bookText ? String(bookText).slice(0, 100000) : '';
+    let bodyContent = bookText ? String(bookText).slice(0, 30000) : '';
     let image = '';
-    let finalUrl = url;
+    let finalUrl = url.trim();
+    const isBookOrDoc = Boolean(bookText || bookBase64);
 
     if (isBookOrDoc) {
       finalUrl = `file://${bookType || 'pdf'}/${encodeURIComponent(bookTitle || 'Book')}`;
     } else {
-      const videoId = extractYouTubeId(url);
+      const lowerUrl = finalUrl.toLowerCase();
+      const videoId = extractYouTubeId(finalUrl);
 
       if (videoId) {
+        // معالجة روابط YouTube
         try {
           const ytRes = await fetch(
-            `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`
+            `https://www.youtube.com/oembed?url=${encodeURIComponent(finalUrl)}&format=json`
           );
           if (ytRes.ok) {
             const ytData = await ytRes.json();
@@ -124,16 +144,68 @@ export async function POST(req: Request) {
             .join(' ')
             .slice(0, 18000);
         } catch {}
-      } else {
+      } else if (lowerUrl.includes('tiktok.com')) {
+        // معالجة روابط TikTok (الكاملة والقصيرة vm.tiktok / vt.tiktok)
         try {
-          const res = await fetch(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+          let targetTikTokUrl = finalUrl;
+          if (lowerUrl.includes('vm.tiktok.com') || lowerUrl.includes('vt.tiktok.com')) {
+            targetTikTokUrl = await resolveShortUrl(finalUrl);
+          }
+          // تنظيف معاملات التتبع الزائدة بعد علامة الاستفهام
+          const cleanTikTokUrl = targetTikTokUrl.split('?')[0];
+
+          const ttRes = await fetch(
+            `https://www.tiktok.com/oembed?url=${encodeURIComponent(cleanTikTokUrl)}`
+          );
+
+          if (ttRes.ok) {
+            const ttData = await ttRes.json();
+            rawTitle = ttData.title || `TikTok by ${ttData.author_name || 'Creator'}`;
+            rawDescription = `TikTok Video by ${ttData.author_name || ''} (@${ttData.author_unique_id || ''}): ${ttData.title || ''}`;
+            image = ttData.thumbnail_url || '';
+            bodyContent = rawDescription;
+          } else {
+            // محاولة احتياطية بالرابط الأصلي قبل التنظيف
+            const fallbackRes = await fetch(
+              `https://www.tiktok.com/oembed?url=${encodeURIComponent(finalUrl)}`
+            );
+            if (fallbackRes.ok) {
+              const ttData = await fallbackRes.json();
+              rawTitle = ttData.title || `TikTok by ${ttData.author_name || 'Creator'}`;
+              rawDescription = `TikTok Video by ${ttData.author_name || ''}: ${ttData.title || ''}`;
+              image = ttData.thumbnail_url || '';
+              bodyContent = rawDescription;
+            } else {
+              rawTitle = 'TikTok Video';
+              rawDescription = `Saved TikTok video link: ${finalUrl}`;
+              bodyContent = rawDescription;
+            }
+          }
+        } catch {
+          rawTitle = 'TikTok Video';
+          rawDescription = `Saved TikTok video link: ${finalUrl}`;
+          bodyContent = rawDescription;
+        }
+      } else {
+        // معالجة بقية المواقع والمنصات
+        try {
+          const res = await fetch(finalUrl, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+            },
           });
           if (res.ok) {
             const html = await res.text();
             const $ = cheerio.load(html);
-            rawTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || url;
-            rawDescription = $('meta[property="og:description"]').attr('content') || '';
+            rawTitle =
+              $('meta[property="og:title"]').attr('content') ||
+              $('title').text() ||
+              finalUrl;
+            rawDescription =
+              $('meta[property="og:description"]').attr('content') ||
+              $('meta[name="description"]').attr('content') ||
+              '';
             image = $('meta[property="og:image"]').attr('content') || '';
 
             $('script, style, nav, footer, header').remove();
@@ -144,157 +216,12 @@ export async function POST(req: Request) {
               .join(' ')
               .replace(/\s+/g, ' ')
               .slice(0, 18000);
+          } else {
+            rawTitle = finalUrl;
+            rawDescription = `Saved link from ${new URL(finalUrl).hostname}`;
           }
         } catch {
-          rawTitle = url;
+          rawTitle = finalUrl;
+          rawDescription = `Saved web resource: ${finalUrl}`;
         }
       }
-    }
-
-    const langInstruction =
-      lang === 'ar'
-        ? 'Write the title, summary, and checklist steps in clear, eloquent Arabic.'
-        : lang === 'tr'
-        ? 'Write the title, summary, and checklist steps in clear, natural Turkish.'
-        : 'Write the title, summary, and checklist steps in clear, natural English.';
-
-    let finalTitle = rawTitle.trim() || finalUrl;
-    let finalSummary = rawDescription.trim() || 'Saved resource';
-    let finalCategory = isBookOrDoc ? 'Learning' : 'General';
-    let finalChecklist: string[] = [];
-    let embedding: number[] = [];
-
-    // 3. التحليل عبر Gemini (يدعم ملفات PDF مباشرة حتى المصورة منها + النصوص + الروابط)
-    if (process.env.GEMINI_API_KEY) {
-      const promptText = isBookOrDoc
-        ? `Analyze this book/document thoroughly and extract:
-1. A clean, accurate book/document title.
-2. A rich 3-sentence executive summary capturing the core thesis and main ideas of the book.
-3. Category: choose ONLY one of "Programming", "Learning", "Business", "General".
-4. Actionable Key Ideas & Checklist: extract 6 to 10 core principles, key takeaways, and practical actionable steps from the book so the reader can apply its wisdom immediately.
-
-${langInstruction}
-
-Title: ${rawTitle}
-${bodyContent ? `Content: ${bodyContent}` : ''}`
-        : `Analyze this tutorial/article and extract:
-1. A clean, concise title.
-2. A 2-sentence executive summary.
-3. Category: choose ONLY one of "Programming", "Learning", "Business", "General".
-4. Actionable Checklist: extract 4 to 8 clear, practical step-by-step instructions so a student or developer can apply what is taught without watching/reading the whole source.
-
-${langInstruction}
-
-Title: ${rawTitle}
-Description: ${rawDescription}
-Content/Transcript: ${bodyContent || rawDescription}
-URL: ${finalUrl}`;
-
-      const contentsForPrompt = (prompt: string) =>
-        bookBase64
-          ? [
-              {
-                inlineData: {
-                  data: bookBase64,
-                  mimeType: bookMimeType || 'application/pdf',
-                },
-              },
-              prompt,
-            ]
-          : prompt;
-      const generateAnalysis = (prompt: string) =>
-        generateContentWithFallback(ai, {
-            contents: contentsForPrompt(prompt),
-            config: {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  summary: { type: Type.STRING },
-                  category: { type: Type.STRING },
-                  checklist: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                  },
-                },
-                required: ['title', 'summary', 'category', 'checklist'],
-              },
-          },
-        });
-
-      const aiRes = await generateAnalysis(promptText);
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = parseAnalysisResponse(aiRes.text);
-      } catch {
-        const retryResponse = await generateAnalysis(
-          `${promptText}\nReturn only a valid JSON object matching the required schema.`
-        );
-        try {
-          parsed = parseAnalysisResponse(retryResponse.text);
-        } catch (error) {
-          console.error('Gemini returned invalid structured output after retry:', error);
-          return NextResponse.json(
-            { error: 'The AI returned an invalid response. Please try again.' },
-            { status: 502 }
-          );
-        }
-      }
-
-      if (typeof parsed.title === 'string' && parsed.title.trim()) {
-        finalTitle = parsed.title.trim();
-      }
-      if (typeof parsed.summary === 'string' && parsed.summary.trim()) {
-        finalSummary = parsed.summary.trim();
-      }
-      if (['Programming', 'Learning', 'Business', 'General'].includes(String(parsed.category))) {
-        finalCategory = String(parsed.category);
-      }
-      if (Array.isArray(parsed.checklist)) {
-        finalChecklist = parsed.checklist.filter(
-          (step): step is string => typeof step === 'string' && step.trim().length > 0
-        );
-      }
-
-      try {
-        const embRes = await ai.models.embedContent({
-          model: 'text-embedding-004',
-          contents: `${finalTitle}. ${finalSummary}. ${finalChecklist.join(' ')}`,
-        });
-        embedding = embRes.embeddings?.[0]?.values || [];
-      } catch {}
-    }
-
-    // 4. خصم 1 نقطة رصيد إذا لم يكن مشتركاً في باقة Pro
-    let updatedCredits = currentCredits;
-    if (!isPro) {
-      updatedCredits = Math.max(0, currentCredits - 1);
-      await supabaseAdmin
-        .from('user_profiles')
-        .update({ credits: updatedCredits, updated_at: new Date().toISOString() })
-        .eq('user_id', userId);
-    }
-
-    return NextResponse.json({
-      url: finalUrl,
-      title: finalTitle,
-      summary: finalSummary,
-      category: finalCategory,
-      image_url: image,
-      checklist: finalChecklist,
-      embedding,
-      remainingCredits: updatedCredits,
-      planType: profile?.plan_type || 'free',
-    });
-  } catch (error) {
-    console.error('Analyze Error:', error);
-    if (error instanceof ApiError && [429, 503].includes(error.status)) {
-      return NextResponse.json(
-        { error: 'The AI service is busy right now. Please try again shortly.' },
-        { status: 503 }
-      );
-    }
-    return NextResponse.json({ error: 'Failed to analyze content' }, { status: 500 });
-  }
-}
