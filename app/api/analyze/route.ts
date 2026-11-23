@@ -1,8 +1,16 @@
 import { NextResponse } from 'next/server';
-import { createSupabaseAdminClient } from '@/lib/supabase-admin';
+import { createClient } from '@supabase/supabase-js';
 import * as cheerio from 'cheerio';
 import { YoutubeTranscript } from 'youtube-transcript';
 import { GoogleGenAI, Type } from '@google/genai';
+// @ts-ignore
+import pdfParse from 'pdf-parse';
+import mammoth from 'mammoth';
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
@@ -14,15 +22,34 @@ function extractYouTubeId(url: string): string | null {
 
 export async function POST(req: Request) {
   try {
-    const { url, lang = 'ar', userId } = await req.json();
+    const contentType = req.headers.get('content-type') || '';
 
-    if (!url || !userId) {
-      return NextResponse.json({ error: 'URL and userId are required' }, { status: 400 });
+    let url = '';
+    let lang = 'ar';
+    let userId = '';
+    let uploadedFile: File | null = null;
+
+    // 1. التفريق بين رفع ملف كتاب (FormData) أو إرسال رابط (JSON)
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await req.formData();
+      uploadedFile = formData.get('file') as File | null;
+      lang = (formData.get('lang') as string) || 'ar';
+      userId = (formData.get('userId') as string) || '';
+    } else {
+      const body = await req.json();
+      url = body.url || '';
+      lang = body.lang || 'ar';
+      userId = body.userId || '';
     }
 
-    const supabaseAdmin = createSupabaseAdminClient();
+    if ((!url && !uploadedFile) || !userId) {
+      return NextResponse.json(
+        { error: 'URL or File and userId are required' },
+        { status: 400 }
+      );
+    }
 
-    // 1. التحقق من رصيد المستخدم في Supabase
+    // 2. التحقق من رصيد المستخدم في Supabase
     let { data: profile } = await supabaseAdmin
       .from('user_profiles')
       .select('credits, plan_type')
@@ -48,79 +75,133 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. سحب البيانات والنص التفصيلي للرابط
+    // 3. استخراج النص من الكتاب أو الرابط
     let rawTitle = '';
     let rawDescription = '';
     let bodyContent = '';
     let image = '';
+    let finalUrl = url;
+    let isBookOrDoc = false;
 
-    const videoId = extractYouTubeId(url);
+    if (uploadedFile) {
+      isBookOrDoc = true;
+      const fileName = uploadedFile.name;
+      const lowerName = fileName.toLowerCase();
+      rawTitle = fileName.replace(/\.[^/.]+$/, '');
+      const arrayBuffer = await uploadedFile.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
 
-    if (videoId) {
-      try {
-        const ytRes = await fetch(
-          `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`
+      if (lowerName.endsWith('.pdf')) {
+        const pdfData = await pdfParse(buffer);
+        bodyContent = (pdfData.text || '').replace(/\s+/g, ' ').slice(0, 30000);
+        finalUrl = `file://pdf/${encodeURIComponent(fileName)}`;
+      } else if (lowerName.endsWith('.docx') || lowerName.endsWith('.doc')) {
+        const docData = await mammoth.extractRawText({ buffer });
+        bodyContent = (docData.value || '').replace(/\s+/g, ' ').slice(0, 30000);
+        finalUrl = `file://word/${encodeURIComponent(fileName)}`;
+      } else if (lowerName.endsWith('.txt') || lowerName.endsWith('.md')) {
+        bodyContent = buffer.toString('utf-8').replace(/\s+/g, ' ').slice(0, 30000);
+        finalUrl = `file://doc/${encodeURIComponent(fileName)}`;
+      } else {
+        return NextResponse.json(
+          { error: 'Unsupported file format. Please upload PDF, DOCX, or TXT.' },
+          { status: 400 }
         );
-        if (ytRes.ok) {
-          const ytData = await ytRes.json();
-          rawTitle = ytData.title || 'YouTube Tutorial';
-          rawDescription = `Channel: ${ytData.author_name || 'YouTube'}`;
-          image = ytData.thumbnail_url || '';
-        }
-      } catch {}
+      }
 
-      // جلب نص الفيديو الكامل (Transcript)
-      try {
-        const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
-        bodyContent = transcriptItems
-          .map((item) => item.text)
-          .join(' ')
-          .slice(0, 14000);
-      } catch {
-        // في حال عدم وجود ترجمة متاحة للفيديو، نعتمد على العنوان والوصف
+      if (!bodyContent.trim()) {
+        return NextResponse.json(
+          { error: 'Could not extract readable text from this file (it may be scanned images).' },
+          { status: 422 }
+        );
       }
     } else {
-      try {
-        const res = await fetch(url, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
-        });
-        if (res.ok) {
-          const html = await res.text();
-          const $ = cheerio.load(html);
-          rawTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || url;
-          rawDescription = $('meta[property="og:description"]').attr('content') || '';
-          image = $('meta[property="og:image"]').attr('content') || '';
+      const videoId = extractYouTubeId(url);
 
-          $('script, style, nav, footer, header').remove();
-          bodyContent = $('article, main, body')
-            .find('h1, h2, h3, p, li')
-            .map((_, el) => $(el).text().trim())
-            .get()
+      if (videoId) {
+        try {
+          const ytRes = await fetch(
+            `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`
+          );
+          if (ytRes.ok) {
+            const ytData = await ytRes.json();
+            rawTitle = ytData.title || 'YouTube Tutorial';
+            rawDescription = `Channel: ${ytData.author_name || 'YouTube'}`;
+            image = ytData.thumbnail_url || '';
+          }
+        } catch {}
+
+        try {
+          const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
+          bodyContent = transcriptItems
+            .map((item) => item.text)
             .join(' ')
-            .replace(/\s+/g, ' ')
-            .slice(0, 14000);
+            .slice(0, 18000);
+        } catch {}
+      } else if (url.toLowerCase().endsWith('.pdf')) {
+        // رابط PDF مباشر
+        isBookOrDoc = true;
+        rawTitle = decodeURIComponent(url.split('/').pop() || 'PDF Book');
+        const pdfRes = await fetch(url);
+        if (pdfRes.ok) {
+          const buffer = Buffer.from(await pdfRes.arrayBuffer());
+          const pdfData = await pdfParse(buffer);
+          bodyContent = (pdfData.text || '').replace(/\s+/g, ' ').slice(0, 30000);
         }
-      } catch {
-        rawTitle = url;
+      } else {
+        try {
+          const res = await fetch(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+          });
+          if (res.ok) {
+            const html = await res.text();
+            const $ = cheerio.load(html);
+            rawTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || url;
+            rawDescription = $('meta[property="og:description"]').attr('content') || '';
+            image = $('meta[property="og:image"]').attr('content') || '';
+
+            $('script, style, nav, footer, header').remove();
+            bodyContent = $('article, main, body')
+              .find('h1, h2, h3, p, li')
+              .map((_, el) => $(el).text().trim())
+              .get()
+              .join(' ')
+              .replace(/\s+/g, ' ')
+              .slice(0, 18000);
+          }
+        } catch {
+          rawTitle = url;
+        }
       }
     }
 
     const langInstruction =
       lang === 'ar'
-        ? 'Write the title, summary, and checklist steps in clear, natural Arabic.'
+        ? 'Write the title, summary, and checklist steps in clear, eloquent Arabic.'
         : lang === 'tr'
         ? 'Write the title, summary, and checklist steps in clear, natural Turkish.'
         : 'Write the title, summary, and checklist steps in clear, natural English.';
 
-    let finalTitle = rawTitle.trim() || url;
-    let finalSummary = rawDescription.trim() || 'Saved tutorial';
-    let finalCategory = 'General';
+    let finalTitle = rawTitle.trim() || finalUrl;
+    let finalSummary = rawDescription.trim() || 'Saved resource';
+    let finalCategory = isBookOrDoc ? 'Learning' : 'General';
     let finalChecklist: string[] = [];
     let embedding: number[] = [];
 
-    // 3. التحليل واستخراج الخطوات عبر Gemini
+    // 4. استخلاص الأفكار والخطوات العملية عبر Gemini
     if (process.env.GEMINI_API_KEY) {
-      const prompt = `Analyze this tutorial/article and extract:
+      const prompt = isBookOrDoc
+        ? `Analyze this book/document and extract:
+1. A clean, accurate book/document title.
+2. A rich 3-sentence executive summary capturing the core thesis and main ideas of the book.
+3. Category: choose ONLY one of "Programming", "Learning", "Business", "General".
+4. Actionable Key Ideas & Checklist: extract 6 to 10 core principles, key takeaways, and practical actionable steps from the book so the reader can apply its wisdom immediately.
+
+${langInstruction}
+
+Title: ${rawTitle}
+Content: ${bodyContent}`
+        : `Analyze this tutorial/article and extract:
 1. A clean, concise title.
 2. A 2-sentence executive summary.
 3. Category: choose ONLY one of "Programming", "Learning", "Business", "General".
@@ -131,7 +212,7 @@ ${langInstruction}
 Title: ${rawTitle}
 Description: ${rawDescription}
 Content/Transcript: ${bodyContent || rawDescription}
-URL: ${url}`;
+URL: ${finalUrl}`;
 
       const aiRes = await ai.models.generateContent({
         model: 'gemini-2.0-flash',
@@ -173,7 +254,7 @@ URL: ${url}`;
       } catch {}
     }
 
-    // 4. خصم 1 نقطة رصيد إذا لم يكن مشتركاً في باقة Pro
+    // 5. خصم 1 نقطة رصيد إذا لم يكن مشتركاً في باقة Pro
     let updatedCredits = currentCredits;
     if (!isPro) {
       updatedCredits = Math.max(0, currentCredits - 1);
@@ -184,6 +265,7 @@ URL: ${url}`;
     }
 
     return NextResponse.json({
+      url: finalUrl,
       title: finalTitle,
       summary: finalSummary,
       category: finalCategory,
@@ -195,6 +277,6 @@ URL: ${url}`;
     });
   } catch (err) {
     console.error('Analyze Error:', err);
-    return NextResponse.json({ error: 'Failed to analyze URL' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to analyze content' }, { status: 500 });
   }
 }
