@@ -26,10 +26,12 @@ export async function POST(req: Request) {
       userId,
       bookTitle,
       bookText,
+      bookBase64,
+      bookMimeType,
       bookType,
     } = body;
 
-    if ((!url && !bookText) || !userId) {
+    if ((!url && !bookText && !bookBase64) || !userId) {
       return NextResponse.json(
         { error: 'URL or book content and userId are required' },
         { status: 400 }
@@ -62,13 +64,13 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. تجهيز المحتوى للتحليل
+    // 2. تجهيز المحتوى
     let rawTitle = bookTitle || '';
     let rawDescription = '';
     let bodyContent = bookText ? String(bookText).slice(0, 30000) : '';
     let image = '';
     let finalUrl = url;
-    const isBookOrDoc = Boolean(bookText);
+    const isBookOrDoc = Boolean(bookText || bookBase64);
 
     if (isBookOrDoc) {
       finalUrl = `file://${bookType || 'pdf'}/${encodeURIComponent(bookTitle || 'Book')}`;
@@ -103,7 +105,7 @@ export async function POST(req: Request) {
           if (res.ok) {
             const html = await res.text();
             const $ = cheerio.load(html);
-            rawTitle = $('meta[property="og:title"]').attr('content') \vert{}\vert{} $('title').text() || url;
+            rawTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || url;
             rawDescription = $('meta[property="og:description"]').attr('content') || '';
             image = $('meta[property="og:image"]').attr('content') || '';
 
@@ -135,10 +137,10 @@ export async function POST(req: Request) {
     let finalChecklist: string[] = [];
     let embedding: number[] = [];
 
-    // 3. استخلاص الأفكار والخطوات العملية عبر Gemini
+    // 3. التحليل عبر Gemini (يدعم ملفات PDF مباشرة حتى المصورة منها + النصوص + الروابط)
     if (process.env.GEMINI_API_KEY) {
-      const prompt = isBookOrDoc
-        ? `Analyze this book/document and extract:
+      const promptText = isBookOrDoc
+        ? `Analyze this book/document thoroughly and extract:
 1. A clean, accurate book/document title.
 2. A rich 3-sentence executive summary capturing the core thesis and main ideas of the book.
 3. Category: choose ONLY one of "Programming", "Learning", "Business", "General".
@@ -147,7 +149,7 @@ export async function POST(req: Request) {
 ${langInstruction}
 
 Title: ${rawTitle}
-Content: ${bodyContent}`
+${bodyContent ? `Content: ${bodyContent}` : ''}`
         : `Analyze this tutorial/article and extract:
 1. A clean, concise title.
 2. A 2-sentence executive summary.
@@ -161,9 +163,21 @@ Description: ${rawDescription}
 Content/Transcript: ${bodyContent || rawDescription}
 URL: ${finalUrl}`;
 
+      const contentsPayload: any = bookBase64
+        ? [
+            {
+              inlineData: {
+                data: bookBase64,
+                mimeType: bookMimeType || 'application/pdf',
+              },
+            },
+            promptText,
+          ]
+        : promptText;
+
       const aiRes = await ai.models.generateContent({
         model: 'gemini-2.0-flash',
-        contents: prompt,
+        contents: contentsPayload,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -222,8 +236,11 @@ URL: ${finalUrl}`;
       remainingCredits: updatedCredits,
       planType: profile?.plan_type || 'free',
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error('Analyze Error:', err);
-    return NextResponse.json({ error: 'Failed to analyze content' }, { status: 500 });
+    return NextResponse.json(
+      { error: err?.message || 'Failed to analyze content' },
+      { status: 500 }
+    );
   }
 }
