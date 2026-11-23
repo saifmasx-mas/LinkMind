@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { translations, Language } from '@/lib/translations';
 import { supabase } from '@/lib/supabase';
 import { User } from '@supabase/supabase-js';
+import OrbitalHub, { SourceFilter } from '@/components/OrbitalHub';
 import {
   Plus,
   Search,
@@ -65,6 +66,9 @@ export default function Home() {
   const [planType, setPlanType] = useState<'free' | 'pro'>('free');
   const [showPricingModal, setShowPricingModal] = useState(false);
 
+  // حالة تصفية المجرة المدارية
+  const [selectedSource, setSelectedSource] = useState<SourceFilter>('all');
+
   const [urlInput, setUrlInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [queryEmbedding, setQueryEmbedding] = useState<number[]>([]);
@@ -82,6 +86,32 @@ export default function Home() {
 
   const t = translations[lang];
   const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || 'saifmas_bot';
+
+  // التعرف التلقائي على مصدر الرابط لأيقونات المجرة
+  const detectSource = (url: string): SourceFilter => {
+    const u = url.toLowerCase();
+    if (u.includes('youtube.com') || u.includes('youtu.be')) return 'youtube';
+    if (u.endsWith('.pdf') || u.includes('/pdf') || u.includes('drive.google.com')) return 'pdf';
+    if (u.endsWith('.doc') || u.endsWith('.docx') || u.includes('docs.google.com')) return 'word';
+    if (u.includes('instagram.com')) return 'instagram';
+    if (u.includes('tiktok.com')) return 'tiktok';
+    if (u.includes('linkedin.com')) return 'linkedin';
+    if (u.includes('x.com') || u.includes('twitter.com')) return 'x';
+    if (u.includes('t.me') || u.includes('telegram')) return 'telegram';
+    return 'all';
+  };
+
+  const sourceCounts: Record<SourceFilter, number> = {
+    all: bookmarks.length,
+    youtube: bookmarks.filter((b) => detectSource(b.url) === 'youtube').length,
+    pdf: bookmarks.filter((b) => detectSource(b.url) === 'pdf').length,
+    word: bookmarks.filter((b) => detectSource(b.url) === 'word').length,
+    instagram: bookmarks.filter((b) => detectSource(b.url) === 'instagram').length,
+    tiktok: bookmarks.filter((b) => detectSource(b.url) === 'tiktok').length,
+    linkedin: bookmarks.filter((b) => detectSource(b.url) === 'linkedin').length,
+    x: bookmarks.filter((b) => detectSource(b.url) === 'x').length,
+    telegram: bookmarks.filter((b) => detectSource(b.url) === 'telegram').length,
+  };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -362,8 +392,11 @@ export default function Home() {
     .filter((b) => {
       const matchesCategory =
         selectedCategory === 'All' || b.category === selectedCategory;
-      if (!searchQuery.trim()) return matchesCategory;
-      return matchesCategory && (b.textMatch || b.semanticScore > 0.45);
+      const matchesSource =
+        selectedSource === 'all' || detectSource(b.url) === selectedSource;
+
+      if (!searchQuery.trim()) return matchesCategory && matchesSource;
+      return matchesCategory && matchesSource && (b.textMatch || b.semanticScore > 0.45);
     })
     .sort((a, b) => {
       if (!searchQuery.trim()) return 0;
@@ -386,7 +419,7 @@ export default function Home() {
       {/* الشريط العلوي */}
       <header className="border-b border-purple-500/20 bg-[#0d071c]/75 backdrop-blur-xl sticky top-0 z-20 shadow-[0_4px_30px_rgba(88,28,135,0.2)]">
         <div className="max-w-6xl mx-auto px-4 py-4 flex flex-wrap items-center justify-between gap-3">
-          {/* الشعار الجديد المتوهج */}
+          {/* الشعار الذهبي المتوهج */}
           <div className="flex items-center gap-3">
             <img
               src="/logo.png"
@@ -569,7 +602,15 @@ export default function Home() {
           </main>
         ) : (
           /* لوحة التحكم السحابية */
-          <main className="max-w-6xl mx-auto px-4 py-10">
+          <main className="max-w-6xl mx-auto px-4 py-8">
+            {/* المجرة المدارية التفاعلية في أعلى ومنتصف الصفحة */}
+            <OrbitalHub
+              selectedSource={selectedSource}
+              onSelectSource={setSelectedSource}
+              counts={sourceCounts}
+              lang={lang}
+            />
+
             <div className="text-center max-w-2xl mx-auto mb-8">
               <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-purple-900/40 border border-amber-400/30 text-amber-300 text-xs font-bold mb-3 shadow-[0_0_15px_rgba(251,191,36,0.15)]">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
