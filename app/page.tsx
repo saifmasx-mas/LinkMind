@@ -297,6 +297,40 @@ export default function Home() {
     }
   };
 
+  // استخراج نص الكتاب في المتصفح (يدعم الكتب الكبيرة حتى 50MB بدون قيود Vercel)
+  const extractBookText = async (file: File): Promise<{ text: string; type: 'pdf' | 'word' }> => {
+    const lower = file.name.toLowerCase();
+
+    if (lower.endsWith('.pdf')) {
+      const pdfjsLib = await import('pdfjs-dist');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let fullText = '';
+      const maxPages = Math.min(pdf.numPages, 40);
+
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const strings = content.items.map((item: any) => item.str || '');
+        fullText += strings.join(' ') + ' ';
+        if (fullText.length > 32000) break;
+      }
+      return { text: fullText.replace(/\s+/g, ' ').trim(), type: 'pdf' };
+    }
+
+    if (lower.endsWith('.docx')) {
+      const mammoth = await import('mammoth');
+      const arrayBuffer = await file.arrayBuffer();
+      const result = await mammoth.extractRawText({ arrayBuffer });
+      return { text: (result.value || '').replace(/\s+/g, ' ').trim(), type: 'word' };
+    }
+
+    const text = await file.text();
+    return { text: text.replace(/\s+/g, ' ').trim(), type: 'word' };
+  };
+
   // رفع كتاب PDF أو مستند Word / TXT وتلخيصه لأفكار
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -310,14 +344,29 @@ export default function Home() {
 
     setLoading(true);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('lang', lang);
-      formData.append('userId', user.id);
+      const { text, type } = await extractBookText(file);
+
+      if (!text || text.length < 30) {
+        alert(
+          lang === 'ar'
+            ? 'هذا الملف عبارة عن صور ممسوحة ضوئياً (Scan) ولا يحتوي على نص قابل للقراءة.'
+            : 'This PDF appears to be scanned images without selectable text.'
+        );
+        return;
+      }
+
+      const cleanTitle = file.name.replace(/\.[^/.]+$/, '');
 
       const res = await fetch('/api/analyze', {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lang,
+          userId: user.id,
+          bookTitle: cleanTitle,
+          bookText: text.slice(0, 30000),
+          bookType: type,
+        }),
       });
 
       const data = await res.json();
@@ -349,10 +398,10 @@ export default function Home() {
           alert('Database error: ' + dbError.message);
         }
       } else {
-        alert(data.error || (lang === 'ar' ? 'تعذر قراءة الملف!' : 'Failed to read file!'));
+        alert(data.error || (lang === 'ar' ? 'حدث خطأ أثناء تحليل الكتاب' : 'Failed to analyze book'));
       }
-    } catch {
-      alert('Error uploading book');
+    } catch (err: any) {
+      alert((lang === 'ar' ? 'تعذر قراءة الملف: ' : 'Error reading file: ') + (err?.message || ''));
     } finally {
       setLoading(false);
       e.target.value = '';
@@ -732,7 +781,7 @@ export default function Home() {
                 </span>
                 <input
                   type="file"
-                  accept=".pdf,.doc,.docx,.txt,.md"
+                  accept=".pdf,.docx,.txt,.md"
                   onChange={handleFileUpload}
                   disabled={loading}
                   className="hidden"

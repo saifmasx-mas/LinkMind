@@ -3,9 +3,6 @@ import { createClient } from '@supabase/supabase-js';
 import * as cheerio from 'cheerio';
 import { YoutubeTranscript } from 'youtube-transcript';
 import { GoogleGenAI, Type } from '@google/genai';
-// @ts-ignore
-import pdfParse from 'pdf-parse';
-import mammoth from 'mammoth';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -22,34 +19,24 @@ function extractYouTubeId(url: string): string | null {
 
 export async function POST(req: Request) {
   try {
-    const contentType = req.headers.get('content-type') || '';
+    const body = await req.json();
+    const {
+      url = '',
+      lang = 'ar',
+      userId,
+      bookTitle,
+      bookText,
+      bookType,
+    } = body;
 
-    let url = '';
-    let lang = 'ar';
-    let userId = '';
-    let uploadedFile: File | null = null;
-
-    // 1. التفريق بين رفع ملف كتاب (FormData) أو إرسال رابط (JSON)
-    if (contentType.includes('multipart/form-data')) {
-      const formData = await req.formData();
-      uploadedFile = formData.get('file') as File | null;
-      lang = (formData.get('lang') as string) || 'ar';
-      userId = (formData.get('userId') as string) || '';
-    } else {
-      const body = await req.json();
-      url = body.url || '';
-      lang = body.lang || 'ar';
-      userId = body.userId || '';
-    }
-
-    if ((!url && !uploadedFile) || !userId) {
+    if ((!url && !bookText) || !userId) {
       return NextResponse.json(
-        { error: 'URL or File and userId are required' },
+        { error: 'URL or book content and userId are required' },
         { status: 400 }
       );
     }
 
-    // 2. التحقق من رصيد المستخدم في Supabase
+    // 1. التحقق من رصيد المستخدم في Supabase
     let { data: profile } = await supabaseAdmin
       .from('user_profiles')
       .select('credits, plan_type')
@@ -75,46 +62,16 @@ export async function POST(req: Request) {
       );
     }
 
-    // 3. استخراج النص من الكتاب أو الرابط
-    let rawTitle = '';
+    // 2. تجهيز المحتوى للتحليل
+    let rawTitle = bookTitle || '';
     let rawDescription = '';
-    let bodyContent = '';
+    let bodyContent = bookText ? String(bookText).slice(0, 30000) : '';
     let image = '';
     let finalUrl = url;
-    let isBookOrDoc = false;
+    const isBookOrDoc = Boolean(bookText);
 
-    if (uploadedFile) {
-      isBookOrDoc = true;
-      const fileName = uploadedFile.name;
-      const lowerName = fileName.toLowerCase();
-      rawTitle = fileName.replace(/\.[^/.]+$/, '');
-      const arrayBuffer = await uploadedFile.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-
-      if (lowerName.endsWith('.pdf')) {
-        const pdfData = await pdfParse(buffer);
-        bodyContent = (pdfData.text || '').replace(/\s+/g, ' ').slice(0, 30000);
-        finalUrl = `file://pdf/${encodeURIComponent(fileName)}`;
-      } else if (lowerName.endsWith('.docx') || lowerName.endsWith('.doc')) {
-        const docData = await mammoth.extractRawText({ buffer });
-        bodyContent = (docData.value || '').replace(/\s+/g, ' ').slice(0, 30000);
-        finalUrl = `file://word/${encodeURIComponent(fileName)}`;
-      } else if (lowerName.endsWith('.txt') || lowerName.endsWith('.md')) {
-        bodyContent = buffer.toString('utf-8').replace(/\s+/g, ' ').slice(0, 30000);
-        finalUrl = `file://doc/${encodeURIComponent(fileName)}`;
-      } else {
-        return NextResponse.json(
-          { error: 'Unsupported file format. Please upload PDF, DOCX, or TXT.' },
-          { status: 400 }
-        );
-      }
-
-      if (!bodyContent.trim()) {
-        return NextResponse.json(
-          { error: 'Could not extract readable text from this file (it may be scanned images).' },
-          { status: 422 }
-        );
-      }
+    if (isBookOrDoc) {
+      finalUrl = `file://${bookType || 'pdf'}/${encodeURIComponent(bookTitle || 'Book')}`;
     } else {
       const videoId = extractYouTubeId(url);
 
@@ -138,16 +95,6 @@ export async function POST(req: Request) {
             .join(' ')
             .slice(0, 18000);
         } catch {}
-      } else if (url.toLowerCase().endsWith('.pdf')) {
-        // رابط PDF مباشر
-        isBookOrDoc = true;
-        rawTitle = decodeURIComponent(url.split('/').pop() || 'PDF Book');
-        const pdfRes = await fetch(url);
-        if (pdfRes.ok) {
-          const buffer = Buffer.from(await pdfRes.arrayBuffer());
-          const pdfData = await pdfParse(buffer);
-          bodyContent = (pdfData.text || '').replace(/\s+/g, ' ').slice(0, 30000);
-        }
       } else {
         try {
           const res = await fetch(url, {
@@ -156,7 +103,7 @@ export async function POST(req: Request) {
           if (res.ok) {
             const html = await res.text();
             const $ = cheerio.load(html);
-            rawTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || url;
+            rawTitle = $('meta[property="og:title"]').attr('content') \vert{}\vert{} $('title').text() || url;
             rawDescription = $('meta[property="og:description"]').attr('content') || '';
             image = $('meta[property="og:image"]').attr('content') || '';
 
@@ -188,7 +135,7 @@ export async function POST(req: Request) {
     let finalChecklist: string[] = [];
     let embedding: number[] = [];
 
-    // 4. استخلاص الأفكار والخطوات العملية عبر Gemini
+    // 3. استخلاص الأفكار والخطوات العملية عبر Gemini
     if (process.env.GEMINI_API_KEY) {
       const prompt = isBookOrDoc
         ? `Analyze this book/document and extract:
@@ -254,7 +201,7 @@ URL: ${finalUrl}`;
       } catch {}
     }
 
-    // 5. خصم 1 نقطة رصيد إذا لم يكن مشتركاً في باقة Pro
+    // 4. خصم 1 نقطة رصيد إذا لم يكن مشتركاً في باقة Pro
     let updatedCredits = currentCredits;
     if (!isPro) {
       updatedCredits = Math.max(0, currentCredits - 1);
