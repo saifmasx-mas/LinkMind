@@ -5,7 +5,6 @@ import { translations, Language } from '@/lib/translations';
 import { supabase } from '@/lib/supabase';
 import { User } from '@supabase/supabase-js';
 import {
-  Brain,
   Plus,
   Search,
   ExternalLink,
@@ -376,7 +375,7 @@ export default function Home() {
       dir={t.dir}
       className="min-h-screen bg-[#070410] text-white font-sans relative overflow-x-hidden selection:bg-amber-400 selection:text-[#140A26]"
     >
-      {/* هالات الإضاءة الخلفية المستوحاة من التدرج البنفسجي والفوشيا والذهبي */}
+      {/* هالات الإضاءة الخلفية */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden z-0">
         <div className="absolute -top-32 -start-32 w-[520px] h-[520px] rounded-full bg-purple-700/25 blur-[130px]" />
         <div className="absolute top-1/4 -end-32 w-[480px] h-[480px] rounded-full bg-indigo-600/20 blur-[130px]" />
@@ -387,11 +386,13 @@ export default function Home() {
       {/* الشريط العلوي */}
       <header className="border-b border-purple-500/20 bg-[#0d071c]/75 backdrop-blur-xl sticky top-0 z-20 shadow-[0_4px_30px_rgba(88,28,135,0.2)]">
         <div className="max-w-6xl mx-auto px-4 py-4 flex flex-wrap items-center justify-between gap-3">
-          {/* الشعار الذهبي المتوهج */}
+          {/* الشعار الجديد المتوهج */}
           <div className="flex items-center gap-3">
-            <div className="relative bg-gradient-to-br from-amber-300 via-amber-400 to-yellow-600 p-2.5 rounded-xl shadow-[0_0_20px_rgba(251,191,36,0.45)]">
-              <Brain className="w-6 h-6 text-[#1a0b2e]" />
-            </div>
+            <img
+              src="/logo.png"
+              alt="LinkMind Logo"
+              className="w-11 h-11 rounded-xl object-cover border border-amber-400/50 shadow-[0_0_20px_rgba(251,191,36,0.4)]"
+            />
             <span className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-amber-200 via-yellow-400 to-amber-500 bg-clip-text text-transparent drop-shadow-[0_2px_10px_rgba(251,191,36,0.25)]">
               {t.appName}
             </span>
@@ -483,7 +484,6 @@ export default function Home() {
           /* شاشة تسجيل الدخول */
           <main className="max-w-md mx-auto px-4 py-20">
             <div className="bg-[#120926]/85 backdrop-blur-xl border border-purple-500/30 rounded-3xl p-8 shadow-[0_0_50px_rgba(147,51,234,0.25)] relative overflow-hidden">
-              {/* خط إضاءة ذهبي علوي */}
               <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
 
               <div className="flex justify-center mb-5">
@@ -570,7 +570,6 @@ export default function Home() {
         ) : (
           /* لوحة التحكم السحابية */
           <main className="max-w-6xl mx-auto px-4 py-10">
-            {/* العنوان الرئيسي */}
             <div className="text-center max-w-2xl mx-auto mb-8">
               <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-purple-900/40 border border-amber-400/30 text-amber-300 text-xs font-bold mb-3 shadow-[0_0_15px_rgba(251,191,36,0.15)]">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
@@ -579,7 +578,6 @@ export default function Home() {
               <h1 className="text-3xl sm:text-4xl font-extrabold mb-3 text-white drop-shadow-[0_2px_15px_rgba(168,85,247,0.35)]">
                 {t.tagline}
               </h1>
-              {/* خط فاصل ذهبي متوهج */}
               <div className="h-0.5 w-40 mx-auto bg-gradient-to-r from-transparent via-amber-400 to-transparent mb-2" />
               <p className="text-xs text-purple-300/60">{user.email}</p>
             </div>
