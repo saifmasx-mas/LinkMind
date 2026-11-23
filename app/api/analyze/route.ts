@@ -12,6 +12,31 @@ function extractYouTubeId(url: string): string | null {
   return match ? match[1] : null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseAnalysisResponse(text: string | undefined): Record<string, unknown> {
+  const response = (text || '').trim().replace(/^```(?:json)?\s*|\s*```$/gi, '');
+  const candidates = [response];
+  const objectStart = response.indexOf('{');
+  const objectEnd = response.lastIndexOf('}');
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    candidates.push(response.slice(objectStart, objectEnd + 1));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (isRecord(parsed)) return parsed;
+    } catch {
+      // Try the next candidate, which may contain a JSON object wrapped in prose.
+    }
+  }
+
+  throw new Error('Gemini returned an invalid structured response');
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -164,47 +189,73 @@ Description: ${rawDescription}
 Content/Transcript: ${bodyContent || rawDescription}
 URL: ${finalUrl}`;
 
-      const contentsPayload: any = bookBase64
-        ? [
-            {
-              inlineData: {
-                data: bookBase64,
-                mimeType: bookMimeType || 'application/pdf',
+      const contentsForPrompt = (prompt: string) =>
+        bookBase64
+          ? [
+              {
+                inlineData: {
+                  data: bookBase64,
+                  mimeType: bookMimeType || 'application/pdf',
+                },
               },
-            },
-            promptText,
-          ]
-        : promptText;
-
-      const aiRes = await ai.models.generateContent({
-        model: 'gemini-2.0-flash',
-        contents: contentsPayload,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              summary: { type: Type.STRING },
-              category: { type: Type.STRING },
-              checklist: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-            },
-            required: ['title', 'summary', 'category', 'checklist'],
+              prompt,
+            ]
+          : prompt;
+      const responseSchema = {
+        type: Type.OBJECT,
+        properties: {
+          title: { type: Type.STRING },
+          summary: { type: Type.STRING },
+          category: { type: Type.STRING },
+          checklist: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
           },
         },
-      });
+        required: ['title', 'summary', 'category', 'checklist'],
+      };
+      const generateAnalysis = (prompt: string) =>
+        ai.models.generateContent({
+          model: 'gemini-2.0-flash',
+          contents: contentsForPrompt(prompt),
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema,
+          },
+        });
 
-      const parsed = JSON.parse(aiRes.text || '{}');
-      finalTitle = parsed.title || finalTitle;
-      finalSummary = parsed.summary || finalSummary;
-      if (['Programming', 'Learning', 'Business', 'General'].includes(parsed.category)) {
-        finalCategory = parsed.category;
+      const aiRes = await generateAnalysis(promptText);
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = parseAnalysisResponse(aiRes.text);
+      } catch {
+        const retryResponse = await generateAnalysis(
+          `${promptText}\nReturn only a valid JSON object matching the required schema.`
+        );
+        try {
+          parsed = parseAnalysisResponse(retryResponse.text);
+        } catch (error) {
+          console.error('Gemini returned invalid structured output after retry:', error);
+          return NextResponse.json(
+            { error: 'The AI returned an invalid response. Please try again.' },
+            { status: 502 }
+          );
+        }
+      }
+
+      if (typeof parsed.title === 'string' && parsed.title.trim()) {
+        finalTitle = parsed.title.trim();
+      }
+      if (typeof parsed.summary === 'string' && parsed.summary.trim()) {
+        finalSummary = parsed.summary.trim();
+      }
+      if (['Programming', 'Learning', 'Business', 'General'].includes(String(parsed.category))) {
+        finalCategory = String(parsed.category);
       }
       if (Array.isArray(parsed.checklist)) {
-        finalChecklist = parsed.checklist;
+        finalChecklist = parsed.checklist.filter(
+          (step): step is string => typeof step === 'string' && step.trim().length > 0
+        );
       }
 
       try {

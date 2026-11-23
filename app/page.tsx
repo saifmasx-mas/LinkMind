@@ -38,6 +38,31 @@ interface Bookmark {
   created_at: string;
 }
 
+interface AnalyzeResponse {
+  error?: string;
+  url?: string;
+  title?: string;
+  summary?: string;
+  category?: string;
+  image_url?: string;
+  checklist?: string[];
+  embedding?: number[];
+  remainingCredits?: number;
+}
+
+async function readAnalyzeResponse(response: Response, invalidMessage: string): Promise<AnalyzeResponse> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await response.text());
+  } catch {
+    throw new Error(invalidMessage);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(invalidMessage);
+  }
+  return parsed as AnalyzeResponse;
+}
+
 function cosineSimilarity(vecA?: number[], vecB?: number[]): number {
   if (!vecA || !vecB || vecA.length === 0 || vecB.length === 0 || vecA.length !== vecB.length) {
     return 0;
@@ -51,6 +76,32 @@ function cosineSimilarity(vecA?: number[], vecB?: number[]): number {
     normB += vecB[i] * vecB[i];
   }
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) || 1);
+}
+
+function parseArrayField<T>(
+  value: unknown,
+  field: string,
+  bookmarkId: string,
+  isItem: (item: unknown) => item is T
+): T[] {
+  if (value == null) return [];
+
+  let parsed = value;
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value);
+    } catch (error) {
+      console.error(`Could not parse bookmark ${field}:`, bookmarkId, error);
+      return [];
+    }
+  }
+
+  if (!Array.isArray(parsed) || !parsed.every(isItem)) {
+    console.error(`Bookmark has invalid ${field} data:`, bookmarkId);
+    return [];
+  }
+
+  return parsed;
 }
 
 export default function Home() {
@@ -171,12 +222,18 @@ export default function Home() {
     if (!error && data) {
       const formatted = data.map((item) => ({
         ...item,
-        checklist: Array.isArray(item.checklist)
-          ? item.checklist
-          : typeof item.checklist === 'string'
-          ? JSON.parse(item.checklist)
-          : [],
-        embedding: typeof item.embedding === 'string' ? JSON.parse(item.embedding) : item.embedding,
+        checklist: parseArrayField(
+          item.checklist,
+          'checklist',
+          item.id,
+          (step): step is string => typeof step === 'string'
+        ),
+        embedding: parseArrayField(
+          item.embedding,
+          'embedding',
+          item.id,
+          (value): value is number => typeof value === 'number' && Number.isFinite(value)
+        ),
         created_at: new Date(item.created_at).toLocaleDateString(),
       }));
       setBookmarks(formatted);
@@ -227,7 +284,10 @@ export default function Home() {
           body: JSON.stringify({ query: searchQuery, mode: 'embed' }),
         });
         if (res.ok) {
-          const data = await res.json();
+          const data = await readAnalyzeResponse(
+            res,
+            lang === 'ar' ? 'استجابة غير صالحة من الخادم. حاول مرة أخرى.' : 'Invalid server response. Please try again.'
+          );
           setQueryEmbedding(data.embedding || []);
         }
       } catch {}
@@ -258,7 +318,10 @@ export default function Home() {
         }),
       });
 
-      const data = await res.json();
+      const data = await readAnalyzeResponse(
+        res,
+        lang === 'ar' ? 'استجابة غير صالحة من الخادم. حاول مرة أخرى.' : 'Invalid server response. Please try again.'
+      );
 
       if (res.status === 402 || data.error === 'OUT_OF_CREDITS') {
         setCredits(0);
