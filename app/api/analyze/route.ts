@@ -18,7 +18,6 @@ function extractYouTubeId(url: string): string | null {
   return match ? match[1] : null;
 }
 
-// فك اختصار روابط المشاركة القصيرة (مثل vm.tiktok.com أو vt.tiktok.com)
 async function resolveShortUrl(url: string): Promise<string> {
   try {
     const res = await fetch(url, {
@@ -35,7 +34,6 @@ async function resolveShortUrl(url: string): Promise<string> {
   }
 }
 
-// التبديل التلقائي وإعادة المحاولة لتجاوز ضغط السيرفر (503 UNAVAILABLE)
 async function generateWithFallback(contentsPayload: any, config: any) {
   const models = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.8-flash-lite'];
   let lastError: any;
@@ -83,7 +81,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // 1. التحقق من رصيد المستخدم في Supabase
     let { data: profile } = await supabaseAdmin
       .from('user_profiles')
       .select('credits, plan_type')
@@ -109,7 +106,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. تجهيز المحتوى حسب نوع المصدر (كتاب / يوتيوب / تيك توك / موقع ويب)
     let rawTitle = bookTitle || '';
     let rawDescription = '';
     let bodyContent = bookText ? String(bookText).slice(0, 30000) : '';
@@ -124,7 +120,6 @@ export async function POST(req: Request) {
       const videoId = extractYouTubeId(finalUrl);
 
       if (videoId) {
-        // معالجة روابط YouTube
         try {
           const ytRes = await fetch(
             `https://www.youtube.com/oembed?url=${encodeURIComponent(finalUrl)}&format=json`
@@ -145,13 +140,11 @@ export async function POST(req: Request) {
             .slice(0, 18000);
         } catch {}
       } else if (lowerUrl.includes('tiktok.com')) {
-        // معالجة روابط TikTok (الكاملة والقصيرة vm.tiktok / vt.tiktok)
         try {
           let targetTikTokUrl = finalUrl;
           if (lowerUrl.includes('vm.tiktok.com') || lowerUrl.includes('vt.tiktok.com')) {
             targetTikTokUrl = await resolveShortUrl(finalUrl);
           }
-          // تنظيف معاملات التتبع الزائدة بعد علامة الاستفهام
           const cleanTikTokUrl = targetTikTokUrl.split('?')[0];
 
           const ttRes = await fetch(
@@ -165,7 +158,6 @@ export async function POST(req: Request) {
             image = ttData.thumbnail_url || '';
             bodyContent = rawDescription;
           } else {
-            // محاولة احتياطية بالرابط الأصلي قبل التنظيف
             const fallbackRes = await fetch(
               `https://www.tiktok.com/oembed?url=${encodeURIComponent(finalUrl)}`
             );
@@ -187,7 +179,6 @@ export async function POST(req: Request) {
           bodyContent = rawDescription;
         }
       } else {
-        // معالجة بقية المواقع والمنصات
         try {
           const res = await fetch(finalUrl, {
             headers: {
@@ -225,3 +216,119 @@ export async function POST(req: Request) {
           rawDescription = `Saved web resource: ${finalUrl}`;
         }
       }
+    }
+
+    const langInstruction =
+      lang === 'ar'
+        ? 'Write the title, summary, and checklist steps in clear, eloquent Arabic.'
+        : lang === 'tr'
+        ? 'Write the title, summary, and checklist steps in clear, natural Turkish.'
+        : 'Write the title, summary, and checklist steps in clear, natural English.';
+
+    let finalTitle = rawTitle.trim() || finalUrl;
+    let finalSummary = rawDescription.trim() || 'Saved resource';
+    let finalCategory = isBookOrDoc ? 'Learning' : 'General';
+    let finalChecklist: string[] = [];
+    let embedding: number[] = [];
+
+    if (process.env.GEMINI_API_KEY) {
+      const promptText = isBookOrDoc
+        ? `Analyze this book/document thoroughly and extract:
+1. A clean, accurate book/document title.
+2. A rich 3-sentence executive summary capturing the core thesis and main ideas of the book.
+3. Category: choose ONLY one of "Programming", "Learning", "Business", "General".
+4. Actionable Key Ideas & Checklist: extract 6 to 10 core principles, key takeaways, and practical actionable steps from the book so the reader can apply its wisdom immediately.
+
+${langInstruction}
+
+Title: ${rawTitle}
+${bodyContent ? `Content: ${bodyContent}` : ''}`
+        : `Analyze this video/post/article and extract:
+1. A clean, concise title.
+2. A 2-sentence executive summary.
+3. Category: choose ONLY one of "Programming", "Learning", "Business", "General".
+4. Actionable Checklist: extract 4 to 8 clear, practical step-by-step instructions or key takeaways based on the title, description, and content so a user can apply what is taught immediately.
+
+${langInstruction}
+
+Title: ${rawTitle}
+Description: ${rawDescription}
+Content/Transcript: ${bodyContent || rawDescription}
+URL: ${finalUrl}`;
+
+      const contentsPayload: any = bookBase64
+        ? [
+            {
+              inlineData: {
+                data: bookBase64,
+                mimeType: bookMimeType || 'application/pdf',
+              },
+            },
+            promptText,
+          ]
+        : promptText;
+
+      const aiRes = await generateWithFallback(contentsPayload, {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            summary: { type: Type.STRING },
+            category: { type: Type.STRING },
+            checklist: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+          },
+          required: ['title', 'summary', 'category', 'checklist'],
+        },
+      });
+
+      const parsed = JSON.parse(aiRes.text || '{}');
+      finalTitle = parsed.title || finalTitle;
+      finalSummary = parsed.summary || finalSummary;
+      if (['Programming', 'Learning', 'Business', 'General'].includes(parsed.category)) {
+        finalCategory = parsed.category;
+      }
+      if (Array.isArray(parsed.checklist)) {
+        finalChecklist = parsed.checklist;
+      }
+
+      try {
+        const embRes = await ai.models.embedContent({
+          model: 'text-embedding-004',
+          contents: `${finalTitle}. ${finalSummary}. ${finalChecklist.join(' ')}`,
+        });
+        embedding = embRes.embeddings?.[0]?.values || [];
+      } catch {}
+    }
+
+    let updatedCredits = currentCredits;
+    if (!isPro) {
+      updatedCredits = Math.max(0, currentCredits - 1);
+      await supabaseAdmin
+        .from('user_profiles')
+        .update({ credits: updatedCredits, updated_at: new Date().toISOString() })
+        .eq('user_id', userId);
+    }
+
+    return NextResponse.json({
+      url: finalUrl,
+      title: finalTitle,
+      summary: finalSummary,
+      category: finalCategory,
+      image_url: image,
+      checklist: finalChecklist,
+      embedding,
+      remainingCredits: updatedCredits,
+      planType: profile?.plan_type || 'free',
+    });
+  } catch (err: any) {
+    console.error('Analyze Error:', err);
+    return NextResponse.json(
+      { error: err?.message || 'Failed to analyze content' },
+      { status: 500 }
+    );
+  }
+}
