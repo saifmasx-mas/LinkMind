@@ -216,7 +216,7 @@ URL: ${finalUrl}`;
       };
       const generateAnalysis = (prompt: string) =>
         ai.models.generateContent({
-          model: 'gemini-2.0-flash',
+          model: 'gemini-3.8-flash',
           contents: contentsForPrompt(prompt),
           config: {
             responseMimeType: 'application/json',

@@ -193,7 +193,7 @@ export async function POST(request: Request) {
       try {
         const ai = new GoogleGenAI({ apiKey: aiKey });
         const aiResponse = await ai.models.generateContent({
-          model: 'gemini-2.0-flash',
+          model: 'gemini-3.8-flash',
           contents: `Summarize this link in Arabic in 2 concise sentences and classify it into ONLY one of: "Programming", "Learning", "Business", "General".\nTitle: ${finalTitle}\nDesc: ${rawDescription}\nURL: ${url.toString()}`,
           config: {
             responseMimeType: 'application/json',

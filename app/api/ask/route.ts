@@ -53,9 +53,9 @@ export async function POST(req: Request) {
       User Question: ${query}
     `;
 
-    // تجربة النماذج المتاحة بالترتيب
+    // Use the current Gemini Flash model for library questions.
     if (process.env.GEMINI_API_KEY) {
-      const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+      const modelsToTry = ['gemini-3.8-flash'];
       for (const modelName of modelsToTry) {
         try {
           const aiResponse = await ai.models.generateContent({
