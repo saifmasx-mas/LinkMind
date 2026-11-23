@@ -12,7 +12,9 @@ export type SourceFilter =
   | 'tiktok'
   | 'linkedin'
   | 'x'
-  | 'telegram';
+  | 'telegram'
+  | 'facebook'
+  | 'google';
 
 interface OrbitalHubProps {
   selectedSource: SourceFilter;
@@ -25,13 +27,13 @@ interface OrbitNode {
   id: SourceFilter;
   label: string;
   ring: 'inner' | 'outer';
-  angle: number; // الزاوية الابتدائية بالدرجات
+  angle: number;
   glowColor: string;
   icon: React.ReactNode;
 }
 
 const ORBIT_NODES: OrbitNode[] = [
-  // المدار الداخلي (4 أيقونات)
+  // المدار الداخلي (5 أيقونات بفاصل 72 درجة)
   {
     id: 'youtube',
     label: 'YouTube',
@@ -48,7 +50,7 @@ const ORBIT_NODES: OrbitNode[] = [
     id: 'pdf',
     label: 'PDF',
     ring: 'inner',
-    angle: 90,
+    angle: 72,
     glowColor: 'shadow-[0_0_20px_rgba(244,63,94,0.55)] border-rose-400/60',
     icon: (
       <div className="flex flex-col items-center justify-center leading-none">
@@ -58,10 +60,37 @@ const ORBIT_NODES: OrbitNode[] = [
     ),
   },
   {
+    id: 'google',
+    label: 'Google',
+    ring: 'inner',
+    angle: 144,
+    glowColor: 'shadow-[0_0_20px_rgba(250,204,21,0.55)] border-yellow-300/60',
+    icon: (
+      <svg viewBox="0 0 24 24" className="w-4 h-4">
+        <path
+          fill="#4285F4"
+          d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
+        />
+        <path
+          fill="#34A853"
+          d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24z"
+        />
+        <path
+          fill="#FBBC05"
+          d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14z"
+        />
+        <path
+          fill="#EA4335"
+          d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96z"
+        />
+      </svg>
+    ),
+  },
+  {
     id: 'telegram',
     label: 'Telegram',
     ring: 'inner',
-    angle: 180,
+    angle: 216,
     glowColor: 'shadow-[0_0_20px_rgba(56,189,248,0.55)] border-sky-400/60',
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5 fill-sky-400">
@@ -73,7 +102,7 @@ const ORBIT_NODES: OrbitNode[] = [
     id: 'word',
     label: 'Word',
     ring: 'inner',
-    angle: 270,
+    angle: 288,
     glowColor: 'shadow-[0_0_20px_rgba(59,130,246,0.55)] border-blue-400/60',
     icon: (
       <div className="flex flex-col items-center justify-center leading-none">
@@ -83,12 +112,24 @@ const ORBIT_NODES: OrbitNode[] = [
     ),
   },
 
-  // المدار الخارجي (4 أيقونات)
+  // المدار الخارجي (5 أيقونات بفاصل 72 درجة)
+  {
+    id: 'facebook',
+    label: 'Facebook',
+    ring: 'outer',
+    angle: 36,
+    glowColor: 'shadow-[0_0_20px_rgba(37,99,235,0.6)] border-blue-500/70',
+    icon: (
+      <svg viewBox="0 0 24 24" className="w-5 h-5 fill-[#1877F2]">
+        <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+      </svg>
+    ),
+  },
   {
     id: 'instagram',
     label: 'Instagram',
     ring: 'outer',
-    angle: 45,
+    angle: 108,
     glowColor: 'shadow-[0_0_20px_rgba(236,72,153,0.55)] border-pink-400/60',
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5 fill-pink-400">
@@ -100,7 +141,7 @@ const ORBIT_NODES: OrbitNode[] = [
     id: 'tiktok',
     label: 'TikTok',
     ring: 'outer',
-    angle: 135,
+    angle: 180,
     glowColor: 'shadow-[0_0_20px_rgba(45,212,191,0.55)] border-teal-300/60',
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5 fill-teal-300">
@@ -112,7 +153,7 @@ const ORBIT_NODES: OrbitNode[] = [
     id: 'linkedin',
     label: 'LinkedIn',
     ring: 'outer',
-    angle: 225,
+    angle: 252,
     glowColor: 'shadow-[0_0_20px_rgba(96,165,250,0.55)] border-blue-300/60',
     icon: (
       <svg viewBox="0 0 24 24" className="w-4 h-4 fill-blue-400">
@@ -124,7 +165,7 @@ const ORBIT_NODES: OrbitNode[] = [
     id: 'x',
     label: 'X',
     ring: 'outer',
-    angle: 315,
+    angle: 324,
     glowColor: 'shadow-[0_0_20px_rgba(251,191,36,0.55)] border-amber-300/60',
     icon: (
       <svg viewBox="0 0 24 24" className="w-4 h-4 fill-white">
@@ -147,7 +188,6 @@ export default function OrbitalHub({
 
   return (
     <div className="relative flex flex-col items-center justify-center my-6 select-none">
-      {/* أنماط الحركة المدارية الملساء */}
       <style jsx>{`
         @keyframes orbitCW {
           from {
@@ -186,7 +226,7 @@ export default function OrbitalHub({
       <div
         onMouseEnter={() => setIsPaused(true)}
         onMouseLeave={() => setIsPaused(false)}
-        className="relative w-[310px] h-[310px] sm:w-[370px] sm:h-[370px] flex items-center justify-center"
+        className="relative w-[320px] h-[320px] sm:w-[390px] sm:h-[390px] flex items-center justify-center"
       >
         {/* هالة سديمية متوهجة خلف المجرة */}
         <div className="absolute inset-6 rounded-full bg-gradient-to-tr from-purple-600/25 via-fuchsia-500/15 to-amber-400/20 blur-2xl pointer-events-none" />
@@ -204,7 +244,7 @@ export default function OrbitalHub({
               <div
                 key={node.id}
                 style={{
-                  transform: `rotate(${node.angle}deg) translateY(-155px) rotate(-${node.angle}deg)`,
+                  transform: `rotate(${node.angle}deg) translateY(-168px) rotate(-${node.angle}deg)`,
                 }}
                 className="hidden sm:flex absolute top-1/2 left-1/2 -ml-6 -mt-6 w-12 h-12 items-center justify-center"
               >
@@ -231,7 +271,7 @@ export default function OrbitalHub({
             );
           })}
 
-          {/* نسخة الموبايل للمدار الخارجي (نصف قطر أصغر) */}
+          {/* نسخة الموبايل للمدار الخارجي */}
           {outerNodes.map((node) => {
             const isSelected = selectedSource === node.id;
             const count = counts[node.id] || 0;
@@ -239,7 +279,7 @@ export default function OrbitalHub({
               <div
                 key={`${node.id}-mob`}
                 style={{
-                  transform: `rotate(${node.angle}deg) translateY(-130px) rotate(-${node.angle}deg)`,
+                  transform: `rotate(${node.angle}deg) translateY(-136px) rotate(-${node.angle}deg)`,
                 }}
                 className="flex sm:hidden absolute top-1/2 left-1/2 -ml-5 -mt-5 w-10 h-10 items-center justify-center"
               >
@@ -279,7 +319,7 @@ export default function OrbitalHub({
               <div
                 key={node.id}
                 style={{
-                  transform: `rotate(${node.angle}deg) translateY(-112px) rotate(-${node.angle}deg)`,
+                  transform: `rotate(${node.angle}deg) translateY(-118px) rotate(-${node.angle}deg)`,
                 }}
                 className="hidden sm:flex absolute top-1/2 left-1/2 -ml-6 -mt-6 w-12 h-12 items-center justify-center"
               >
@@ -314,7 +354,7 @@ export default function OrbitalHub({
               <div
                 key={`${node.id}-mob`}
                 style={{
-                  transform: `rotate(${node.angle}deg) translateY(-92px) rotate(-${node.angle}deg)`,
+                  transform: `rotate(${node.angle}deg) translateY(-95px) rotate(-${node.angle}deg)`,
                 }}
                 className="flex sm:hidden absolute top-1/2 left-1/2 -ml-5 -mt-5 w-10 h-10 items-center justify-center"
               >

@@ -1,3 +1,4 @@
+
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -38,31 +39,6 @@ interface Bookmark {
   created_at: string;
 }
 
-interface AnalyzeResponse {
-  error?: string;
-  url?: string;
-  title?: string;
-  summary?: string;
-  category?: string;
-  image_url?: string;
-  checklist?: string[];
-  embedding?: number[];
-  remainingCredits?: number;
-}
-
-async function readAnalyzeResponse(response: Response, invalidMessage: string): Promise<AnalyzeResponse> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await response.text());
-  } catch {
-    throw new Error(invalidMessage);
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(invalidMessage);
-  }
-  return parsed as AnalyzeResponse;
-}
-
 function cosineSimilarity(vecA?: number[], vecB?: number[]): number {
   if (!vecA || !vecB || vecA.length === 0 || vecB.length === 0 || vecA.length !== vecB.length) {
     return 0;
@@ -76,32 +52,6 @@ function cosineSimilarity(vecA?: number[], vecB?: number[]): number {
     normB += vecB[i] * vecB[i];
   }
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) || 1);
-}
-
-function parseArrayField<T>(
-  value: unknown,
-  field: string,
-  bookmarkId: string,
-  isItem: (item: unknown) => item is T
-): T[] {
-  if (value == null) return [];
-
-  let parsed = value;
-  if (typeof value === 'string') {
-    try {
-      parsed = JSON.parse(value);
-    } catch (error) {
-      console.error(`Could not parse bookmark ${field}:`, bookmarkId, error);
-      return [];
-    }
-  }
-
-  if (!Array.isArray(parsed) || !parsed.every(isItem)) {
-    console.error(`Bookmark has invalid ${field} data:`, bookmarkId);
-    return [];
-  }
-
-  return parsed;
 }
 
 export default function Home() {
@@ -157,6 +107,10 @@ export default function Home() {
       u.includes('docs.google.com')
     )
       return 'word';
+    if (u.includes('facebook.com') || u.includes('fb.watch') || u.includes('fb.com'))
+      return 'facebook';
+    if (u.includes('google.com') || u.includes('goo.gl') || u.includes('medium.com'))
+      return 'google';
     if (u.includes('instagram.com')) return 'instagram';
     if (u.includes('tiktok.com')) return 'tiktok';
     if (u.includes('linkedin.com')) return 'linkedin';
@@ -170,6 +124,8 @@ export default function Home() {
     youtube: bookmarks.filter((b) => detectSource(b.url) === 'youtube').length,
     pdf: bookmarks.filter((b) => detectSource(b.url) === 'pdf').length,
     word: bookmarks.filter((b) => detectSource(b.url) === 'word').length,
+    facebook: bookmarks.filter((b) => detectSource(b.url) === 'facebook').length,
+    google: bookmarks.filter((b) => detectSource(b.url) === 'google').length,
     instagram: bookmarks.filter((b) => detectSource(b.url) === 'instagram').length,
     tiktok: bookmarks.filter((b) => detectSource(b.url) === 'tiktok').length,
     linkedin: bookmarks.filter((b) => detectSource(b.url) === 'linkedin').length,
@@ -222,18 +178,12 @@ export default function Home() {
     if (!error && data) {
       const formatted = data.map((item) => ({
         ...item,
-        checklist: parseArrayField(
-          item.checklist,
-          'checklist',
-          item.id,
-          (step): step is string => typeof step === 'string'
-        ),
-        embedding: parseArrayField(
-          item.embedding,
-          'embedding',
-          item.id,
-          (value): value is number => typeof value === 'number' && Number.isFinite(value)
-        ),
+        checklist: Array.isArray(item.checklist)
+          ? item.checklist
+          : typeof item.checklist === 'string'
+          ? JSON.parse(item.checklist)
+          : [],
+        embedding: typeof item.embedding === 'string' ? JSON.parse(item.embedding) : item.embedding,
         created_at: new Date(item.created_at).toLocaleDateString(),
       }));
       setBookmarks(formatted);
@@ -284,10 +234,7 @@ export default function Home() {
           body: JSON.stringify({ query: searchQuery, mode: 'embed' }),
         });
         if (res.ok) {
-          const data = await readAnalyzeResponse(
-            res,
-            lang === 'ar' ? 'استجابة غير صالحة من الخادم. حاول مرة أخرى.' : 'Invalid server response. Please try again.'
-          );
+          const data = await res.json();
           setQueryEmbedding(data.embedding || []);
         }
       } catch {}
@@ -318,10 +265,7 @@ export default function Home() {
         }),
       });
 
-      const data = await readAnalyzeResponse(
-        res,
-        lang === 'ar' ? 'استجابة غير صالحة من الخادم. حاول مرة أخرى.' : 'Invalid server response. Please try again.'
-      );
+      const data = await res.json();
 
       if (res.status === 402 || data.error === 'OUT_OF_CREDITS') {
         setCredits(0);
@@ -351,7 +295,7 @@ export default function Home() {
           alert('Database error: ' + dbError.message);
         }
       } else {
-        alert(lang === 'ar' ? 'تأكد من صحة الرابط!' : 'Please enter a valid URL!');
+        alert(data.error || (lang === 'ar' ? 'تأكد من صحة الرابط!' : 'Please enter a valid URL!'));
       }
     } catch {
       alert('Error processing link');
@@ -360,58 +304,20 @@ export default function Home() {
     }
   };
 
-  // Extract document text in the browser so uploads stay within serverless request limits.
-  const extractBookText = async (file: File): Promise<{ text: string; type: 'pdf' | 'word' }> => {
-    const lower = file.name.toLowerCase();
-
-    if (lower.endsWith('.pdf')) {
-      const pdfjsLib = await import('pdfjs-dist');
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-
-      const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      let fullText = '';
-
-      for (let i = 1; i <= pdf.numPages && fullText.length < 100000; i++) {
-        const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        const strings = content.items.map((item: any) => item.str || '');
-        fullText += strings.join(' ') + ' ';
-      }
-      return { text: fullText.replace(/\s+/g, ' ').trim().slice(0, 100000), type: 'pdf' };
-    }
-
-    if (lower.endsWith('.docx')) {
-      const mammoth = await import('mammoth');
-      const arrayBuffer = await file.arrayBuffer();
-      const result = await mammoth.extractRawText({ arrayBuffer });
-      return { text: (result.value || '').replace(/\s+/g, ' ').trim(), type: 'word' };
-    }
-
-    const text = await file.text();
-    return { text: text.replace(/\s+/g, ' ').trim(), type: 'word' };
-  };
-
-  const readFileAsBase64 = (file: File): Promise<string> =>
+  // تحويل الملف إلى Base64 لإرساله مباشرة إلى Gemini
+  const fileToBase64 = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => {
-        if (typeof reader.result !== 'string') {
-          reject(new Error('Could not read the PDF file.'));
-          return;
-        }
-        const base64 = reader.result.split(',')[1];
-        if (!base64) {
-          reject(new Error('Could not encode the PDF file.'));
-          return;
-        }
+        const result = reader.result as string;
+        const base64 = result.split(',')[1];
         resolve(base64);
       };
-      reader.onerror = () => reject(reader.error || new Error('Could not read the PDF file.'));
+      reader.onerror = reject;
       reader.readAsDataURL(file);
     });
 
-  // Upload a PDF or Word document and summarize its key ideas.
+  // رفع كتاب PDF أو مستند Word / TXT وتلخيصه لأفكار
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
@@ -424,48 +330,59 @@ export default function Home() {
 
     setLoading(true);
     try {
-      const { text, type } = await extractBookText(file);
-      let bookBase64: string | undefined;
-
-      if (!text || text.length < 30) {
-        if (type !== 'pdf' || file.size > 3 * 1024 * 1024) {
-          alert(
-            lang === 'ar'
-              ? 'تعذر استخراج نص كافٍ من الملف. يمكن تحليل ملفات PDF الممسوحة ضوئياً حتى 3 ميغابايت.'
-              : 'Could not extract enough text. Scanned PDFs up to 3 MB can be analyzed directly.'
-          );
-          return;
-        }
-        bookBase64 = await readFileAsBase64(file);
-      }
-
+      const lower = file.name.toLowerCase();
       const cleanTitle = file.name.replace(/\.[^/.]+$/, '');
-      const requestBody: {
-        lang: Language;
-        userId: string;
-        bookTitle: string;
-        bookText?: string;
-        bookBase64?: string;
-        bookMimeType?: string;
-        bookType: 'pdf' | 'word';
-      } = {
+      let payload: any = {
         lang,
         userId: user.id,
         bookTitle: cleanTitle,
-        bookType: type,
       };
-      if (bookBase64) {
-        requestBody.bookBase64 = bookBase64;
-        requestBody.bookMimeType = 'application/pdf';
+
+      if (lower.endsWith('.pdf')) {
+        if (file.size <= 3.2 * 1024 * 1024) {
+          const base64 = await fileToBase64(file);
+          payload.bookBase64 = base64;
+          payload.bookMimeType = 'application/pdf';
+          payload.bookType = 'pdf';
+        } else {
+          alert(
+            lang === 'ar'
+              ? 'حجم ملف PDF كبير جداً (الحد الأقصى 3.2 ميجابايت للرفع المباشر). جرب ملفاً أصغر أو قسّم الكتاب.'
+              : 'PDF file exceeds 3.2MB direct upload limit.'
+          );
+          return;
+        }
+      } else if (lower.endsWith('.docx')) {
+        const mammoth = await import('mammoth');
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        const text = (result.value || '').replace(/\s+/g, ' ').trim();
+        if (!text) {
+          alert(lang === 'ar' ? 'ملف Word فارغ!' : 'Word document is empty!');
+          return;
+        }
+        payload.bookText = text.slice(0, 30000);
+        payload.bookType = 'word';
       } else {
-        requestBody.bookText = text.slice(0, 100000);
+        const text = (await file.text()).replace(/\s+/g, ' ').trim();
+        if (!text) {
+          alert(lang === 'ar' ? 'الملف النصي فارغ!' : 'Text file is empty!');
+          return;
+        }
+        payload.bookText = text.slice(0, 30000);
+        payload.bookType = 'word';
       }
 
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(payload),
       });
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error(`Server returned status ${res.status}`);
+      }
 
       const data = await res.json();
 

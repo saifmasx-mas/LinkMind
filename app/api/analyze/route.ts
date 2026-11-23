@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createSupabaseAdminClient } from '@/lib/supabase-admin';
+import { generateContentWithFallback } from '@/lib/gemini';
 import * as cheerio from 'cheerio';
 import { YoutubeTranscript } from 'youtube-transcript';
-import { GoogleGenAI, Type } from '@google/genai';
+import { ApiError, GoogleGenAI, Type } from '@google/genai';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
@@ -201,26 +202,24 @@ URL: ${finalUrl}`;
               prompt,
             ]
           : prompt;
-      const responseSchema = {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          summary: { type: Type.STRING },
-          category: { type: Type.STRING },
-          checklist: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-          },
-        },
-        required: ['title', 'summary', 'category', 'checklist'],
-      };
       const generateAnalysis = (prompt: string) =>
-        ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: contentsForPrompt(prompt),
-          config: {
-            responseMimeType: 'application/json',
-            responseSchema,
+        generateContentWithFallback(ai, {
+            contents: contentsForPrompt(prompt),
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  summary: { type: Type.STRING },
+                  category: { type: Type.STRING },
+                  checklist: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
+                },
+                required: ['title', 'summary', 'category', 'checklist'],
+              },
           },
         });
 
@@ -288,11 +287,14 @@ URL: ${finalUrl}`;
       remainingCredits: updatedCredits,
       planType: profile?.plan_type || 'free',
     });
-  } catch (err: any) {
-    console.error('Analyze Error:', err);
-    return NextResponse.json(
-      { error: err?.message || 'Failed to analyze content' },
-      { status: 500 }
-    );
+  } catch (error) {
+    console.error('Analyze Error:', error);
+    if (error instanceof ApiError && [429, 503].includes(error.status)) {
+      return NextResponse.json(
+        { error: 'The AI service is busy right now. Please try again shortly.' },
+        { status: 503 }
+      );
+    }
+    return NextResponse.json({ error: 'Failed to analyze content' }, { status: 500 });
   }
 }

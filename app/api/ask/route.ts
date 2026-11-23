@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
+import { generateContentWithFallback } from '@/lib/gemini';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
@@ -53,21 +54,15 @@ export async function POST(req: Request) {
       User Question: ${query}
     `;
 
-    // Use the current Gemini Flash model for library questions.
+    // Use the current Gemini Flash models for library questions.
     if (process.env.GEMINI_API_KEY) {
-      const modelsToTry = ['gemini-3.8-flash'];
-      for (const modelName of modelsToTry) {
-        try {
-          const aiResponse = await ai.models.generateContent({
-            model: modelName,
-            contents: prompt,
-          });
-          if (aiResponse.text) {
-            return NextResponse.json({ answer: aiResponse.text });
-          }
-        } catch (err) {
-          console.warn(`Ask model ${modelName} failed, trying next...`);
+      try {
+        const aiResponse = await generateContentWithFallback(ai, { contents: prompt });
+        if (aiResponse.text) {
+          return NextResponse.json({ answer: aiResponse.text });
         }
+      } catch (error) {
+        console.warn('All Gemini models failed for library question:', error);
       }
     }
 

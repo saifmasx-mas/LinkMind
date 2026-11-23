@@ -4,6 +4,7 @@ import * as cheerio from 'cheerio';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createSupabaseAdminClient } from '@/lib/supabase-admin';
 import { fetchPublicUrl } from '@/lib/safe-fetch';
+import { generateContentWithFallback } from '@/lib/gemini';
 
 export const runtime = 'nodejs';
 
@@ -192,8 +193,7 @@ export async function POST(request: Request) {
     if (aiKey) {
       try {
         const ai = new GoogleGenAI({ apiKey: aiKey });
-        const aiResponse = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+        const aiResponse = await generateContentWithFallback(ai, {
           contents: `Summarize this link in Arabic in 2 concise sentences and classify it into ONLY one of: "Programming", "Learning", "Business", "General".\nTitle: ${finalTitle}\nDesc: ${rawDescription}\nURL: ${url.toString()}`,
           config: {
             responseMimeType: 'application/json',
