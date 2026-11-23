@@ -17,6 +17,13 @@ import {
   LogOut,
   Lock,
   Send,
+  CheckSquare,
+  Square,
+  FileText,
+  Copy,
+  Check,
+  Zap,
+  Crown,
 } from 'lucide-react';
 
 interface Bookmark {
@@ -26,6 +33,7 @@ interface Bookmark {
   summary: string;
   category: string;
   image_url?: string;
+  checklist?: string[];
   embedding?: number[];
   created_at: string;
 }
@@ -52,8 +60,11 @@ export default function Home() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
-  const [telegramBusy, setTelegramBusy] = useState(false);
-  const [telegramError, setTelegramError] = useState('');
+
+  // حالة الرصيد والباقة
+  const [credits, setCredits] = useState<number>(5);
+  const [planType, setPlanType] = useState<'free' | 'pro'>('free');
+  const [showPricingModal, setShowPricingModal] = useState(false);
 
   const [urlInput, setUrlInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -62,13 +73,18 @@ export default function Home() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // تتبع الخطوات المنجزة لكل بطاقة ونسخ Notion
+  const [completedSteps, setCompletedSteps] = useState<Record<string, boolean>>({});
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
   const [askQuery, setAskQuery] = useState('');
   const [aiAnswer, setAiAnswer] = useState('');
   const [asking, setAsking] = useState(false);
 
   const t = translations[lang];
+  const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || 'saifmas_bot';
 
-  // التحقق من حالة تسجيل الدخول عند فتح التطبيق
+  // التحقق من حالة تسجيل الدخول
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
@@ -82,14 +98,29 @@ export default function Home() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // جلب روابط المستخدم من Supabase عند تسجيل الدخول
+  // جلب الروابط والرصيد عند تسجيل الدخول
   useEffect(() => {
     if (user) {
       fetchBookmarks();
+      fetchUserProfile();
     } else {
       setBookmarks([]);
     }
   }, [user]);
+
+  const fetchUserProfile = async () => {
+    if (!user) return;
+    const { data } = await supabase
+      .from('user_profiles')
+      .select('credits, plan_type')
+      .eq('user_id', user.id)
+      .single();
+
+    if (data) {
+      setCredits(data.credits);
+      setPlanType(data.plan_type === 'pro' ? 'pro' : 'free');
+    }
+  };
 
   const fetchBookmarks = async () => {
     const { data, error } = await supabase
@@ -100,6 +131,11 @@ export default function Home() {
     if (!error && data) {
       const formatted = data.map((item) => ({
         ...item,
+        checklist: Array.isArray(item.checklist)
+          ? item.checklist
+          : typeof item.checklist === 'string'
+          ? JSON.parse(item.checklist)
+          : [],
         embedding: typeof item.embedding === 'string' ? JSON.parse(item.embedding) : item.embedding,
         created_at: new Date(item.created_at).toLocaleDateString(),
       }));
@@ -107,7 +143,6 @@ export default function Home() {
     }
   };
 
-  // تسجيل الدخول أو إنشاء حساب بالبريد الإلكتروني
   const handleAuth = async (isSignUp: boolean) => {
     setAuthError('');
     if (!email || !password) return;
@@ -121,7 +156,6 @@ export default function Home() {
     }
   };
 
-  // تسجيل الدخول عبر حساب Google
   const handleGoogleLogin = async () => {
     setAuthError('');
     const { error } = await supabase.auth.signInWithOAuth({
@@ -132,34 +166,6 @@ export default function Home() {
     });
     if (error) {
       setAuthError(error.message);
-    }
-  };
-
-  const handleTelegramLink = async () => {
-    setTelegramError('');
-    setTelegramBusy(true);
-    try {
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !session) {
-        throw new Error(t.telegramSignInRequired);
-      }
-
-      const response = await fetch('/api/telegram/link', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      const result = await response.json();
-      if (!response.ok || typeof result.url !== 'string') {
-        throw new Error(result.error || t.telegramLinkFailed);
-      }
-
-      window.location.assign(result.url);
-    } catch (error) {
-      setTelegramError(
-        error instanceof Error ? error.message : t.telegramLinkFailed
-      );
-    } finally {
-      setTelegramBusy(false);
     }
   };
 
@@ -185,28 +191,41 @@ export default function Home() {
           const data = await res.json();
           setQueryEmbedding(data.embedding || []);
         }
-      } catch {
-        // تجاهل الخطأ
-      }
+      } catch {}
     }, 500);
 
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // تحليل الرابط وحفظه في Supabase
+  // تحويل الرابط إلى ملخص وخطوات عملية
   const handleAddBookmark = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!urlInput.trim() || !user) return;
+
+    if (planType !== 'pro' && credits <= 0) {
+      setShowPricingModal(true);
+      return;
+    }
 
     setLoading(true);
     try {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: urlInput.trim(), lang }),
+        body: JSON.stringify({
+          url: urlInput.trim(),
+          lang,
+          userId: user.id,
+        }),
       });
 
       const data = await res.json();
+
+      if (res.status === 402 || data.error === 'OUT_OF_CREDITS') {
+        setCredits(0);
+        setShowPricingModal(true);
+        return;
+      }
 
       if (res.ok) {
         const { error: dbError } = await supabase.from('bookmarks').insert({
@@ -216,10 +235,14 @@ export default function Home() {
           summary: data.summary,
           category: data.category,
           image_url: data.image_url,
+          checklist: data.checklist || [],
           embedding: data.embedding && data.embedding.length > 0 ? data.embedding : null,
         });
 
         if (!dbError) {
+          if (typeof data.remainingCredits === 'number') {
+            setCredits(data.remainingCredits);
+          }
           await fetchBookmarks();
           setUrlInput('');
         } else {
@@ -233,6 +256,69 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // تبديل حالة إنجاز الخطوة
+  const toggleStep = (bookmarkId: string, stepIndex: number) => {
+    const key = `${bookmarkId}-${stepIndex}`;
+    setCompletedSteps((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  // نسخ الخطوات بصيغة Notion / Markdown
+  const handleCopyNotion = (item: Bookmark) => {
+    const stepsText = (item.checklist || [])
+      .map((step, idx) => `- [ ] **${idx + 1}.** ${step}`)
+      .join('\n');
+
+    const markdown = `# ${item.title}\n\n> ${item.summary}\n\n🔗 **Source:** ${item.url}\n\n## Actionable Checklist\n${stepsText}\n\n---\n*Generated by LinkMind AI*`;
+
+    navigator.clipboard.writeText(markdown);
+    setCopiedId(item.id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  // تصدير الخطوات كملف PDF منسق
+  const handleExportPDF = (item: Bookmark) => {
+    const printWindow = window.open('', '_blank', 'width=800,height=900');
+    if (!printWindow) return;
+
+    const stepsHtml = (item.checklist || [])
+      .map(
+        (step, idx) =>
+          `<li style="margin-bottom: 12px; padding: 10px 14px; background: #f8fafc; border-radius: 8px; border-inline-start: 4px solid #4f46e5;">
+            <strong>${idx + 1}.</strong> ${step}
+          </li>`
+      )
+      .join('');
+
+    printWindow.document.write(`
+      <html dir="${t.dir}">
+        <head>
+          <title>${item.title} - LinkMind Checklist</title>
+          <style>
+            body { font-family: system-ui, -apple-system, sans-serif; padding: 40px; color: #0f172a; line-height: 1.6; }
+            .badge { display: inline-block; background: #eef2ff; color: #4338ca; padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: bold; }
+            h1 { font-size: 24px; margin: 16px 0 12px; color: #1e1b4b; }
+            .summary { background: #f1f5f9; padding: 16px; border-radius: 10px; color: #334155; margin-bottom: 24px; }
+            ul { list-style: none; padding: 0; }
+            .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b; }
+          </style>
+        </head>
+        <body>
+          <span class="badge">${item.category}</span>
+          <h1>${item.title}</h1>
+          <div class="summary">${item.summary}</div>
+          <h3>${lang === 'ar' ? 'خطوات التنفيذ العملية (Checklist):' : 'Actionable Checklist:'}</h3>
+          <ul>${stepsHtml}</ul>
+          <div class="footer">
+            Source: ${item.url} <br/>
+            Generated by LinkMind Tutorial-to-Checklist
+          </div>
+          <script>window.onload = () => { window.print(); }</script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
   };
 
   const handleAskMemory = async (e: React.FormEvent) => {
@@ -274,7 +360,10 @@ export default function Home() {
     .map((b) => {
       const textMatch =
         b.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        b.summary.toLowerCase().includes(searchQuery.toLowerCase());
+        b.summary.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (b.checklist || []).some((step) =>
+          step.toLowerCase().includes(searchQuery.toLowerCase())
+        );
       const semanticScore = cosineSimilarity(queryEmbedding, b.embedding);
       return { ...b, textMatch, semanticScore };
     })
@@ -293,7 +382,7 @@ export default function Home() {
     <div dir={t.dir} className="min-h-screen bg-slate-950 text-slate-100 font-sans">
       {/* الشريط العلوي */}
       <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur-md sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-4 py-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <div className="bg-indigo-600 p-2 rounded-xl">
               <Brain className="w-6 h-6 text-white" />
@@ -303,7 +392,39 @@ export default function Home() {
             </span>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* عداد الرصيد والترقية */}
+            {user && (
+              <button
+                onClick={() => setShowPricingModal(true)}
+                className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border transition cursor-pointer ${
+                  planType === 'pro'
+                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/40 hover:bg-amber-500/25'
+                    : credits > 0
+                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25'
+                    : 'bg-rose-500/15 text-rose-300 border-rose-500/40 hover:bg-rose-500/25'
+                }`}
+              >
+                {planType === 'pro' ? (
+                  <>
+                    <Crown className="w-3.5 h-3.5 text-amber-400" />
+                    <span>PRO ∞</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-3.5 h-3.5" />
+                    <span>
+                      {lang === 'ar'
+                        ? `الرصيد: ${credits} شروحات`
+                        : lang === 'tr'
+                        ? `Kredi: ${credits}`
+                        : `Credits: ${credits}`}
+                    </span>
+                  </>
+                )}
+              </button>
+            )}
+
             {/* أزرار اللغات الثلاث */}
             <div className="flex items-center gap-1 bg-slate-800 p-1 rounded-lg border border-slate-700">
               <Globe className="w-4 h-4 text-slate-400 mx-1.5" />
@@ -324,15 +445,15 @@ export default function Home() {
 
             {user && (
               <>
-                <button
-                  type="button"
-                  onClick={handleTelegramLink}
-                  disabled={telegramBusy}
-                  className="flex items-center gap-1.5 text-xs bg-sky-600/20 hover:bg-sky-600/30 disabled:opacity-60 text-sky-400 border border-sky-500/30 px-3 py-2 rounded-lg transition"
+                <a
+                  href={`https://t.me/${botUsername}?start=${user.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-xs bg-sky-600/20 hover:bg-sky-600/30 text-sky-400 border border-sky-500/30 px-3 py-2 rounded-lg transition"
                 >
                   <Send className="w-3.5 h-3.5" />
-                  <span>{telegramBusy ? t.telegramConnecting : t.telegramBot}</span>
-                </button>
+                  <span>Telegram</span>
+                </a>
 
                 <button
                   onClick={handleLogout}
@@ -344,11 +465,6 @@ export default function Home() {
               </>
             )}
           </div>
-          {telegramError && (
-            <p role="alert" className="mt-2 text-xs text-rose-300 text-end">
-              {telegramError}
-            </p>
-          )}
         </div>
       </header>
 
@@ -442,7 +558,7 @@ export default function Home() {
           </div>
         </main>
       ) : (
-        /* لوحة التحكم السحابية بعد تسجيل الدخول */
+        /* لوحة التحكم السحابية */
         <main className="max-w-6xl mx-auto px-4 py-10">
           <div className="text-center max-w-2xl mx-auto mb-8">
             <h1 className="text-3xl sm:text-4xl font-extrabold mb-3 text-white">
@@ -575,28 +691,96 @@ export default function Home() {
                       <h3 className="font-bold text-lg text-white mb-2 line-clamp-2">
                         {item.title}
                       </h3>
-                      <p className="text-sm text-slate-400 leading-relaxed line-clamp-3">
+                      <p className="text-sm text-slate-400 leading-relaxed mb-4">
                         {item.summary}
                       </p>
+
+                      {/* قائمة الخطوات العملية التفاعلية (Tutorial-to-Checklist) */}
+                      {item.checklist && item.checklist.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-slate-800/80">
+                          <p className="text-xs font-bold text-cyan-400 mb-2.5 flex items-center gap-1.5">
+                            <CheckSquare className="w-3.5 h-3.5" />
+                            <span>
+                              {lang === 'ar'
+                                ? 'خطوات التنفيذ العملية:'
+                                : lang === 'tr'
+                                ? 'Uygulama Adımları:'
+                                : 'Actionable Checklist:'}
+                            </span>
+                          </p>
+                          <ul className="space-y-2 max-h-56 overflow-y-auto pe-1">
+                            {item.checklist.map((step, idx) => {
+                              const isDone = !!completedSteps[`${item.id}-${idx}`];
+                              return (
+                                <li
+                                  key={idx}
+                                  onClick={() => toggleStep(item.id, idx)}
+                                  className={`flex items-start gap-2 text-xs p-2 rounded-lg cursor-pointer transition ${
+                                    isDone
+                                      ? 'bg-emerald-950/30 text-slate-500 line-through'
+                                      : 'bg-slate-950/70 text-slate-200 hover:bg-slate-800/70'
+                                  }`}
+                                >
+                                  {isDone ? (
+                                    <CheckSquare className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                                  ) : (
+                                    <Square className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                                  )}
+                                  <span className="leading-relaxed">{step}</span>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  <div className="px-5 py-3 bg-slate-950/50 border-t border-slate-800/80 flex items-center justify-between">
-                    <a
-                      href={item.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs font-medium text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
-                    >
-                      <span>{t.visitBtn}</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
+                  {/* شريط الإجراءات والتصدير لـ Notion و PDF */}
+                  <div className="px-4 py-3 bg-slate-950/70 border-t border-slate-800/80 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={item.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs font-medium text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+                      >
+                        <span>{t.visitBtn}</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+
+                      {item.checklist && item.checklist.length > 0 && (
+                        <>
+                          <button
+                            onClick={() => handleCopyNotion(item)}
+                            title="Copy Markdown for Notion"
+                            className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-2 py-1 rounded flex items-center gap-1 transition cursor-pointer"
+                          >
+                            {copiedId === item.id ? (
+                              <Check className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3 h-3 text-cyan-400" />
+                            )}
+                            <span>Notion</span>
+                          </button>
+
+                          <button
+                            onClick={() => handleExportPDF(item)}
+                            title="Export as PDF"
+                            className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-2 py-1 rounded flex items-center gap-1 transition cursor-pointer"
+                          >
+                            <FileText className="w-3 h-3 text-amber-400" />
+                            <span>PDF</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+
                     <button
                       onClick={() => handleDelete(item.id)}
                       className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 cursor-pointer"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
-                      <span>{t.deleteBtn}</span>
                     </button>
                   </div>
                 </div>
@@ -604,6 +788,109 @@ export default function Home() {
             </div>
           )}
         </main>
+      )}
+
+      {/* نافذة الباقات والرصيد (Pricing Modal) */}
+      {showPricingModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 sm:p-8 relative shadow-2xl">
+            <button
+              onClick={() => setShowPricingModal(false)}
+              className="absolute top-4 end-4 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="text-center mb-6">
+              <h2 className="text-2xl font-bold text-white mb-2">
+                {lang === 'ar'
+                  ? 'اشحن رصيدك وحوّل الشروحات إلى خطوات عملية'
+                  : 'Upgrade Your Learning Workflow'}
+              </h2>
+              <p className="text-sm text-slate-400">
+                {lang === 'ar'
+                  ? `رصيدك الحالي: ${planType === 'pro' ? 'غير محدود (PRO)' : `${credits} شروحات`}`
+                  : `Current balance: ${planType === 'pro' ? 'Unlimited (PRO)' : `${credits} credits`}`}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* باقة الطلاب Pay-As-You-Go */}
+              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold uppercase px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-400">
+                      {lang === 'ar' ? 'باقة الطلاب' : 'Student Pack'}
+                    </span>
+                    <Zap className="w-5 h-5 text-cyan-400" />
+                  </div>
+                  <div className="text-3xl font-extrabold text-white mb-1">
+                    $5 <span className="text-xs font-normal text-slate-400">/ 50 شرحاً</span>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-4">
+                    {lang === 'ar'
+                      ? 'ادفع عند الحاجة — رصيد لا تنتهي صلاحيته أبداً'
+                      : 'Pay-As-You-Go — Credits never expire'}
+                  </p>
+                  <ul className="space-y-2 text-xs text-slate-300 mb-6">
+                    <li>✓ تحويل 50 فيديو يوتيوب أو مقال إلى خطوات</li>
+                    <li>✓ تصدير مباشر إلى Notion و PDF</li>
+                    <li>✓ بدون التزام باشتراك شهري</li>
+                  </ul>
+                </div>
+                <button
+                  onClick={() =>
+                    alert(
+                      lang === 'ar'
+                        ? 'سيتم ربط بوابة الدفع قريباً! (50 شرحاً مقابل 5$)'
+                        : 'Payment gateway integration coming soon!'
+                    )
+                  }
+                  className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-2.5 rounded-xl text-sm transition cursor-pointer"
+                >
+                  {lang === 'ar' ? 'شراء 50 شرحاً ($5)' : 'Buy 50 Credits ($5)'}
+                </button>
+              </div>
+
+              {/* باقة صناع المحتوى والمدربين */}
+              <div className="bg-gradient-to-b from-indigo-950/60 to-slate-950 border border-indigo-500/50 rounded-2xl p-6 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold uppercase px-2.5 py-1 rounded-full bg-indigo-500/20 text-indigo-300">
+                      {lang === 'ar' ? 'صنّاع المحتوى والمدربين' : 'Creators & Coaches'}
+                    </span>
+                    <Crown className="w-5 h-5 text-amber-400" />
+                  </div>
+                  <div className="text-3xl font-extrabold text-white mb-1">
+                    $12 <span className="text-xs font-normal text-slate-400">/ شهرياً</span>
+                  </div>
+                  <p className="text-xs text-slate-400 mb-4">
+                    {lang === 'ar'
+                      ? 'حوّل فيديوهاتك الطويلة إلى ملخصات جاهزة لمتابعيك'
+                      : 'Turn long tutorials into downloadable PDF/Notion guides'}
+                  </p>
+                  <ul className="space-y-2 text-xs text-slate-300 mb-6">
+                    <li>✓ تحويل عدد غير محدود من الشروحات شهرياً</li>
+                    <li>✓ تصدير احترافي PDF و Notion جاهز للتوزيع</li>
+                    <li>✓ ربط بوت تيليجرام للحفظ الفوري</li>
+                  </ul>
+                </div>
+                <button
+                  onClick={() =>
+                    alert(
+                      lang === 'ar'
+                        ? 'سيتم ربط بوابة الدفع قريباً! (باقة المدربين 12$/شهر)'
+                        : 'Payment gateway integration coming soon!'
+                    )
+                  }
+                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2.5 rounded-xl text-sm transition cursor-pointer"
+                >
+                  {lang === 'ar' ? 'اشترك الآن ($12/شهر)' : 'Subscribe ($12/mo)'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
