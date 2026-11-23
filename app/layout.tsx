@@ -1,18 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { Cairo, Inter } from 'next/font/google';
 import './globals.css';
-
-const cairo = Cairo({
-  subsets: ['arabic', 'latin'],
-  weight: ['400', '600', '700', '800'],
-  variable: '--font-cairo',
-});
-
-const inter = Inter({
-  subsets: ['latin'],
-  weight: ['400', '600', '700', '800'],
-  variable: '--font-inter',
-});
 
 export const viewport: Viewport = {
   themeColor: '#0d071c',
@@ -42,7 +29,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="ar" className={`${cairo.variable} ${inter.variable}`}>
+    <html lang="ar">
       <body className="bg-[#070410] text-white antialiased font-sans">
         {children}
       </body>
