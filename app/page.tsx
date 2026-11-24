@@ -2,9 +2,10 @@
 
 import React, { useState, useEffect } from 'react';
 import { translations, Language } from '@/lib/translations';
-import { supabase } from '@/lib/supabase';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { User } from '@supabase/supabase-js';
 import OrbitalHub, { SourceFilter } from '@/components/OrbitalHub';
+import PricingModal from '@/components/PricingModal';
 import {
   Plus,
   Search,
@@ -77,15 +78,39 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
 
   // تتبع الخطوات المنجزة لكل بطاقة ونسخ Notion
-  const [completedSteps, setCompletedSteps] = useState<Record<string, boolean>>({});
+  // I10: completed steps survive a page refresh (localStorage).
+  const [completedSteps, setCompletedSteps] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = window.localStorage.getItem('linkmind-completed-steps');
+      return saved ? (JSON.parse(saved) as Record<string, boolean>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [notice, setNotice] = useState('');
+  const [telegramLinking, setTelegramLinking] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
 
   const [askQuery, setAskQuery] = useState('');
   const [aiAnswer, setAiAnswer] = useState('');
   const [asking, setAsking] = useState(false);
 
   const t = translations[lang];
-  const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || 'saifmas_bot';
+  // I2: no hardcoded bot name. When the variable is missing the Telegram
+  // button is hidden instead of linking to somebody else's bot.
+  const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME;
+
+  // Authorization header for the authenticated API routes (C1).
+  const authHeaders = async (): Promise<Record<string, string>> => {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    return session
+      ? { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }
+      : { 'Content-Type': 'application/json' };
+  };
 
   // التعرف التلقائي على مصدر الرابط أو الكتاب المرفوع لأيقونات المجرة
   const detectSource = (url: string): SourceFilter => {
@@ -108,8 +133,7 @@ export default function Home() {
       return 'word';
     if (u.includes('facebook.com') || u.includes('fb.watch') || u.includes('fb.com'))
       return 'facebook';
-    if (u.includes('google.com') || u.includes('goo.gl') || u.includes('medium.com'))
-      return 'google';
+    if (u.includes('google.com') || u.includes('goo.gl')) return 'google';
     if (u.includes('instagram.com')) return 'instagram';
     if (u.includes('tiktok.com')) return 'tiktok';
     if (u.includes('linkedin.com')) return 'linkedin';
@@ -154,6 +178,14 @@ export default function Home() {
     }
   }, [user]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('linkmind-completed-steps', JSON.stringify(completedSteps));
+    } catch {
+      // Storage full or unavailable: checklist state just stays in memory.
+    }
+  }, [completedSteps]);
+
   const fetchUserProfile = async () => {
     if (!user) return;
     const { data } = await supabase
@@ -168,22 +200,37 @@ export default function Home() {
     }
   };
 
+  // C8: one corrupt checklist/embedding row used to throw inside .map()
+  // and wipe the whole library. Parse defensively, one row at a time.
+  const safeJsonArray = (value: unknown): number[] | string[] => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+
   const fetchBookmarks = async () => {
+    if (!user) return;
+    // C3: ask only for this user's rows (RLS is the second line of defence,
+    // not the only one).
     const { data, error } = await supabase
       .from('bookmarks')
       .select('*')
+      .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
     if (!error && data) {
       const formatted = data.map((item) => ({
         ...item,
-        checklist: Array.isArray(item.checklist)
-          ? item.checklist
-          : typeof item.checklist === 'string'
-          ? JSON.parse(item.checklist)
-          : [],
-        embedding: typeof item.embedding === 'string' ? JSON.parse(item.embedding) : item.embedding,
-        created_at: new Date(item.created_at).toLocaleDateString(),
+        checklist: safeJsonArray(item.checklist) as string[],
+        embedding: safeJsonArray(item.embedding) as number[],
+        created_at: new Date(item.created_at).toLocaleString(),
       }));
       setBookmarks(formatted);
     }
@@ -194,7 +241,12 @@ export default function Home() {
     if (!email || !password) return;
 
     const { error } = isSignUp
-      ? await supabase.auth.signUp({ email, password })
+      ? await supabase.auth.signUp({
+          email,
+          password,
+          // I4: email confirmation must land on the dedicated callback page.
+          options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+        })
       : await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
@@ -207,11 +259,67 @@ export default function Home() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.origin,
+        // I4: the dedicated /auth/callback page exists for exactly this.
+        redirectTo: `${window.location.origin}/auth/callback`,
       },
     });
     if (error) {
       setAuthError(error.message);
+    }
+  };
+
+  // C6: the reset-password page existed but nothing in the UI ever linked
+  // to it. This sends the reset email to /auth/reset-password.
+  const handleForgotPassword = async () => {
+    setAuthError('');
+    setResetSent(false);
+    if (!email) {
+      setAuthError(
+        lang === 'ar'
+          ? 'اكتب بريدك الإلكتروني أولاً ثم اضغط "نسيت كلمة المرور؟".'
+          : lang === 'tr'
+          ? 'Önce e-posta adresinizi girin, sonra "Şifrenizi mi unuttunuz?" bağlantısına dokunun.'
+          : 'Enter your email first, then tap "Forgot password?".'
+      );
+      return;
+    }
+    setResetBusy(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/auth/reset-password`,
+    });
+    setResetBusy(false);
+    if (error) {
+      setAuthError(error.message);
+    } else {
+      setResetSent(true);
+    }
+  };
+
+  // C5: the Telegram button used to open t.me/<bot>?start=<user.id>, which
+  // the webhook always rejects. It now asks the server for a one-time
+  // 43-character token and opens the link it returns.
+  const handleTelegramLink = async () => {
+    if (!user) {
+      alert(t.telegramSignInRequired);
+      return;
+    }
+    setTelegramLinking(true);
+    try {
+      const headers = await authHeaders();
+      const res = await fetch('/api/telegram/link', {
+        method: 'POST',
+        headers,
+      });
+      const data = await res.json();
+      if (res.ok && data.url) {
+        window.open(data.url, '_blank', 'noopener,noreferrer');
+      } else {
+        alert(t.telegramLinkFailed);
+      }
+    } catch {
+      alert(t.telegramLinkFailed);
+    } finally {
+      setTelegramLinking(false);
     }
   };
 
@@ -225,27 +333,45 @@ export default function Home() {
       return;
     }
 
+    // I11: cancel the previous embedding request when the query changes,
+    // instead of letting stale results overwrite newer ones.
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
+        const headers = await authHeaders();
         const res = await fetch('/api/ask', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
+          signal: controller.signal,
           body: JSON.stringify({ query: searchQuery, mode: 'embed' }),
         });
         if (res.ok) {
           const data = await res.json();
           setQueryEmbedding(data.embedding || []);
         }
-      } catch {}
+      } catch (err) {
+        if ((err as Error)?.name !== 'AbortError') {
+          // Embedding failure is non-fatal: text search still works.
+        }
+      }
     }, 500);
 
-    return () => clearTimeout(timer);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
   }, [searchQuery]);
 
   // إضافة رابط ويب أو يوتيوب أو تيك توك
   const handleAddBookmark = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!urlInput.trim() || !user) return;
+
+    // I5: refuse a link that is already in this user's library.
+    if (bookmarks.some((b) => b.url === urlInput.trim())) {
+      alert(t.duplicateLink);
+      return;
+    }
 
     if (planType !== 'pro' && credits <= 0) {
       setShowPricingModal(true);
@@ -254,13 +380,13 @@ export default function Home() {
 
     setLoading(true);
     try {
+      const headers = await authHeaders();
       const res = await fetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           url: urlInput.trim(),
           lang,
-          userId: user.id,
         }),
       });
 
@@ -271,9 +397,25 @@ export default function Home() {
 
       const data = await res.json();
 
+      if (res.status === 409 || data.error === 'DUPLICATE_LINK') {
+        alert(t.duplicateLink);
+        return;
+      }
+
       if (res.status === 402 || data.error === 'OUT_OF_CREDITS') {
         setCredits(0);
         setShowPricingModal(true);
+        return;
+      }
+
+      if (res.status === 503 || data.error === 'AI_UNAVAILABLE') {
+        alert(
+          lang === 'ar'
+            ? 'خدمة الذكاء الاصطناعي غير متاحة حالياً. حاول لاحقاً، ولم يُخصم أي رصيد.'
+            : lang === 'tr'
+            ? 'Yapay zeka hizmeti şu anda kullanılamıyor. Daha sonra tekrar deneyin, kredi düşülmedi.'
+            : 'The AI service is unavailable right now. Try again later; no credit was deducted.'
+        );
         return;
       }
 
@@ -293,6 +435,9 @@ export default function Home() {
           if (typeof data.remainingCredits === 'number') {
             setCredits(data.remainingCredits);
           }
+          // I7: the page/transcript could not be fetched, so the summary is
+          // based on the title alone — say so instead of failing silently.
+          if (data.contentWarning) setNotice(t.contentWarning);
           await fetchBookmarks();
           setUrlInput('');
         } else {
@@ -339,7 +484,6 @@ export default function Home() {
       const cleanTitle = file.name.replace(/\.[^/.]+$/, '');
       let payload: any = {
         lang,
-        userId: user.id,
         bookTitle: cleanTitle,
       };
 
@@ -413,9 +557,10 @@ export default function Home() {
         payload.bookType = 'word';
       }
 
+      const headers = await authHeaders();
       const res = await fetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
       });
 
@@ -429,6 +574,17 @@ export default function Home() {
       if (res.status === 402 || data.error === 'OUT_OF_CREDITS') {
         setCredits(0);
         setShowPricingModal(true);
+        return;
+      }
+
+      if (res.status === 503 || data.error === 'AI_UNAVAILABLE') {
+        alert(
+          lang === 'ar'
+            ? 'خدمة الذكاء الاصطناعي غير متاحة حالياً. حاول لاحقاً، ولم يُخصم أي رصيد.'
+            : lang === 'tr'
+            ? 'Yapay zeka hizmeti şu anda kullanılamıyor. Daha sonra tekrar deneyin, kredi düşülmedi.'
+            : 'The AI service is unavailable right now. Try again later; no credit was deducted.'
+        );
         return;
       }
 
@@ -448,6 +604,7 @@ export default function Home() {
           if (typeof data.remainingCredits === 'number') {
             setCredits(data.remainingCredits);
           }
+          if (data.contentWarning) setNotice(t.contentWarning);
           await fetchBookmarks();
         } else {
           alert('Database error: ' + dbError.message);
@@ -480,6 +637,16 @@ export default function Home() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  // C9: titles and summaries come from external pages and from the AI, so
+  // they must be escaped before being injected into the print window.
+  const escapeHtml = (value: string): string =>
+    value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
   const handleExportPDF = (item: Bookmark) => {
     const printWindow = window.open('', '_blank', 'width=800,height=900');
     if (!printWindow) return;
@@ -488,7 +655,7 @@ export default function Home() {
       .map(
         (step, idx) =>
           `<li style="margin-bottom: 12px; padding: 10px 14px; background: #faf5ff; border-radius: 8px; border-inline-start: 4px solid #9333ea;">
-            <strong style="color: #7e22ce;">${idx + 1}.</strong> ${step}
+            <strong style="color: #7e22ce;">${idx + 1}.</strong> ${escapeHtml(step)}
           </li>`
       )
       .join('');
@@ -507,13 +674,13 @@ export default function Home() {
           </style>
         </head>
         <body>
-          <span class="badge">${item.category}</span>
-          <h1>${item.title}</h1>
-          <div class="summary">${item.summary}</div>
+          <span class="badge">${escapeHtml(item.category)}</span>
+          <h1>${escapeHtml(item.title)}</h1>
+          <div class="summary">${escapeHtml(item.summary)}</div>
           <h3>${lang === 'ar' ? 'خطوات التنفيذ والأفكار الرئيسية:' : 'Actionable Checklist & Key Ideas:'}</h3>
           <ul>${stepsHtml}</ul>
           <div class="footer">
-            Source: ${item.url} <br/>
+            Source: ${escapeHtml(item.url)} <br/>
             Generated by LinkMind AI
           </div>
           <script>window.onload = () => { window.print(); }</script>
@@ -530,9 +697,10 @@ export default function Home() {
     setAsking(true);
     setAiAnswer('');
     try {
+      const headers = await authHeaders();
       const res = await fetch('/api/ask', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           query: askQuery,
           bookmarks,
@@ -552,7 +720,13 @@ export default function Home() {
   };
 
   const handleDelete = async (id: string) => {
-    const { error } = await supabase.from('bookmarks').delete().eq('id', id);
+    if (!user) return;
+    // C3: never delete another user's row, even if RLS is misconfigured.
+    const { error } = await supabase
+      .from('bookmarks')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user.id);
     if (!error) {
       setBookmarks(bookmarks.filter((b) => b.id !== id));
     }
@@ -662,17 +836,18 @@ export default function Home() {
               ))}
             </div>
 
-            {user && (
+            {user && botUsername && (
               <>
-                <a
-                  href={`https://t.me/${botUsername}?start=${user.id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-xs font-semibold bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 text-amber-200 border border-purple-400/30 px-3.5 py-2 rounded-xl transition"
+                <button
+                  type="button"
+                  onClick={handleTelegramLink}
+                  disabled={telegramLinking}
+                  title={t.telegramBot}
+                  className="flex items-center gap-1.5 text-xs font-semibold bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 text-amber-200 border border-purple-400/30 px-3.5 py-2 rounded-xl transition disabled:opacity-60 cursor-pointer"
                 >
                   <Send className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Telegram</span>
-                </a>
+                  <span>{telegramLinking ? t.telegramConnecting : 'Telegram'}</span>
+                </button>
 
                 <button
                   onClick={handleLogout}
@@ -709,6 +884,18 @@ export default function Home() {
               </h2>
               <p className="text-sm text-center text-purple-200/75 mb-6">{t.tagline}</p>
 
+              {/* N11: say plainly when Supabase is not configured instead of
+                  showing cryptic network errors on every action. */}
+              {!isSupabaseConfigured && (
+                <div className="mb-4 p-3 rounded-xl bg-amber-500/15 border border-amber-400/40 text-xs text-amber-200 text-center">
+                  {lang === 'ar'
+                    ? 'Supabase غير مضبوط: أضف NEXT_PUBLIC_SUPABASE_URL و NEXT_PUBLIC_SUPABASE_ANON_KEY إلى متغيرات البيئة.'
+                    : lang === 'tr'
+                    ? 'Supabase yapılandırılmamış: NEXT_PUBLIC_SUPABASE_URL ve NEXT_PUBLIC_SUPABASE_ANON_KEY ortam değişkenlerini ekleyin.'
+                    : 'Supabase is not configured: set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in the environment variables.'}
+                </div>
+              )}
+
               {authError && (
                 <div className="mb-4 p-3 rounded-xl bg-fuchsia-500/15 border border-fuchsia-500/40 text-xs text-fuchsia-200 text-center">
                   {authError}
@@ -730,6 +917,20 @@ export default function Home() {
                   placeholder={t.passwordPlaceholder}
                   className="w-full bg-[#090514] border border-purple-500/30 rounded-xl px-4 py-3 text-sm text-white placeholder-purple-300/40 focus:outline-none focus:border-amber-400 transition"
                 />
+
+                <div className="flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    disabled={resetBusy}
+                    className="text-xs text-amber-300/90 hover:text-amber-200 underline underline-offset-2 disabled:opacity-60 cursor-pointer"
+                  >
+                    {t.forgotPassword}
+                  </button>
+                  {resetSent && (
+                    <span className="text-xs text-emerald-300">{t.resetEmailSent}</span>
+                  )}
+                </div>
 
                 <div className="flex flex-col gap-2.5 pt-2">
                   <button
@@ -856,6 +1057,20 @@ export default function Home() {
                 <span>{loading ? t.savingBtn : t.saveBtn}</span>
               </button>
             </form>
+
+            {/* تنبيه عند فشل جلب محتوى الرابط: الملخص مبني على العنوان فقط */}
+            {notice && (
+              <div className="max-w-3xl mx-auto mb-6 p-3 rounded-xl bg-amber-500/10 border border-amber-400/40 text-xs text-amber-200 flex items-start justify-between gap-3">
+                <span>{notice}</span>
+                <button
+                  type="button"
+                  onClick={() => setNotice('')}
+                  className="text-amber-300/70 hover:text-white shrink-0 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
             {/* صندوق اسأل ذاكرتك */}
             {bookmarks.length > 0 && (
@@ -1078,107 +1293,12 @@ export default function Home() {
 
       {/* نافذة الباقات والرصيد */}
       {showPricingModal && (
-        <div className="fixed inset-0 z-50 bg-[#05020d]/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-gradient-to-b from-[#1a0d38] to-[#0d061f] border border-amber-400/40 rounded-3xl max-w-2xl w-full p-6 sm:p-8 relative shadow-[0_0_60px_rgba(168,85,247,0.35)]">
-            <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-purple-500 via-amber-400 to-fuchsia-500 rounded-t-3xl" />
-
-            <button
-              onClick={() => setShowPricingModal(false)}
-              className="absolute top-4 end-4 text-purple-300 hover:text-white cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="text-center mb-6">
-              <h2 className="text-2xl font-extrabold text-white mb-2">
-                {lang === 'ar'
-                  ? 'اشحن رصيدك وحوّل الشروحات والكتب إلى خطوات عملية'
-                  : 'Upgrade Your Learning Workflow'}
-              </h2>
-              <p className="text-sm text-amber-300/90 font-medium">
-                {lang === 'ar'
-                  ? `رصيدك الحالي: ${planType === 'pro' ? 'غير محدود (PRO)' : `${credits} شروحات`}`
-                  : `Current balance: ${planType === 'pro' ? 'Unlimited (PRO)' : `${credits} credits`}`}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* باقة الطلاب */}
-              <div className="bg-[#090514]/90 border border-purple-500/30 rounded-2xl p-6 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs font-bold uppercase px-3 py-1 rounded-full bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30">
-                      {lang === 'ar' ? 'باقة الطلاب' : 'Student Pack'}
-                    </span>
-                    <Zap className="w-5 h-5 text-fuchsia-400" />
-                  </div>
-                  <div className="text-3xl font-extrabold text-white mb-1">
-                    $5 <span className="text-xs font-normal text-purple-300/70">/ 50 شرحاً</span>
-                  </div>
-                  <p className="text-xs text-purple-200/70 mb-4">
-                    {lang === 'ar'
-                      ? 'ادفع عند الحاجة — رصيد لا تنتهي صلاحيته أبداً'
-                      : 'Pay-As-You-Go — Credits never expire'}
-                  </p>
-                  <ul className="space-y-2 text-xs text-purple-100/90 mb-6">
-                    <li>✓ تحويل 50 فيديو يوتيوب أو كتاب PDF إلى خطوات</li>
-                    <li>✓ تصدير مباشر إلى Notion و PDF</li>
-                    <li>✓ بدون التزام باشتراك شهري</li>
-                  </ul>
-                </div>
-                <button
-                  onClick={() =>
-                    alert(
-                      lang === 'ar'
-                        ? 'سيتم ربط بوابة الدفع قريباً! (50 شرحاً مقابل 5$)'
-                        : 'Payment gateway integration coming soon!'
-                    )
-                  }
-                  className="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white font-bold py-2.5 rounded-xl text-sm transition cursor-pointer shadow-[0_0_20px_rgba(192,38,211,0.3)]"
-                >
-                  {lang === 'ar' ? 'شراء 50 شرحاً ($5)' : 'Buy 50 Credits ($5)'}
-                </button>
-              </div>
-
-              {/* باقة صناع المحتوى والمدربين الذهبية */}
-              <div className="bg-gradient-to-b from-purple-900/40 to-[#090514] border border-amber-400/50 rounded-2xl p-6 flex flex-col justify-between shadow-[0_0_30px_rgba(251,191,36,0.15)]">
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs font-bold uppercase px-3 py-1 rounded-full bg-amber-400/20 text-amber-300 border border-amber-400/40">
-                      {lang === 'ar' ? 'صنّاع المحتوى والمدربين' : 'Creators & Coaches'}
-                    </span>
-                    <Crown className="w-5 h-5 text-amber-400" />
-                  </div>
-                  <div className="text-3xl font-extrabold text-amber-300 mb-1">
-                    $12 <span className="text-xs font-normal text-purple-200/70">/ شهرياً</span>
-                  </div>
-                  <p className="text-xs text-purple-200/70 mb-4">
-                    {lang === 'ar'
-                      ? 'حوّل فيديوهاتك الطويلة وكتبك إلى ملخصات جاهزة لمتابعيك'
-                      : 'Turn long tutorials & books into downloadable PDF/Notion guides'}
-                  </p>
-                  <ul className="space-y-2 text-xs text-purple-100/90 mb-6">
-                    <li>✓ تحويل عدد غير محدود من الشروحات والكتب شهرياً</li>
-                    <li>✓ تصدير احترافي PDF و Notion جاهز للتوزيع</li>
-                    <li>✓ ربط بوت تيليجرام للحفظ الفوري</li>
-                  </ul>
-                </div>
-                <button
-                  onClick={() =>
-                    alert(
-                      lang === 'ar'
-                        ? 'سيتم ربط بوابة الدفع قريباً! (باقة المدربين 12$/شهر)'
-                        : 'Payment gateway integration coming soon!'
-                    )
-                  }
-                  className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-[#180a2e] font-extrabold py-2.5 rounded-xl text-sm transition cursor-pointer shadow-[0_0_20px_rgba(251,191,36,0.35)]"
-                >
-                  {lang === 'ar' ? 'اشترك الآن ($12/شهر)' : 'Subscribe ($12/mo)'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <PricingModal
+          credits={credits}
+          planType={planType}
+          lang={lang}
+          onClose={() => setShowPricingModal(false)}
+        />
       )}
     </div>
   );
