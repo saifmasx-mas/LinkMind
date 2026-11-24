@@ -172,6 +172,20 @@ export default function Home() {
       ? 'Şu anda kaydedilemedi. Daha sonra tekrar deneyin.'
       : 'Could not save right now. Please try again later.';
 
+  // TIMEOUT FIX (2026-11-25): /api/analyze can take a while (page fetch +
+  // Gemini). Abort at 55s — before Vercel's 60s function limit — and say so
+  // plainly instead of the generic save error. AbortSignal.timeout aborts
+  // with a DOMException named 'TimeoutError'.
+  const ANALYZE_TIMEOUT_MS = 55_000;
+  const analyzeTimeoutMessage = (): string =>
+    lang === 'ar'
+      ? 'استغرق التحليل وقتاً طويلاً، حاول مجدداً.'
+      : lang === 'tr'
+      ? 'Analiz çok uzun sürdü, lütfen tekrar deneyin.'
+      : 'The analysis took too long, please try again.';
+  const isFetchTimeout = (err: unknown): boolean =>
+    err instanceof DOMException && err.name === 'TimeoutError';
+
   // Authorization header for the authenticated API routes (C1).
   const authHeaders = async (): Promise<Record<string, string>> => {
     const {
@@ -487,6 +501,7 @@ export default function Home() {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers,
+        signal: AbortSignal.timeout(ANALYZE_TIMEOUT_MS),
         body: JSON.stringify({
           url: urlInput.trim(),
           lang,
@@ -552,7 +567,7 @@ export default function Home() {
       }
     } catch (err) {
       console.error('Failed to save bookmark:', err);
-      setNotice(genericSaveError());
+      setNotice(isFetchTimeout(err) ? analyzeTimeoutMessage() : genericSaveError());
     } finally {
       setLoading(false);
     }
@@ -665,6 +680,7 @@ export default function Home() {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers,
+        signal: AbortSignal.timeout(ANALYZE_TIMEOUT_MS),
         body: JSON.stringify(payload),
       });
 
@@ -719,7 +735,7 @@ export default function Home() {
       }
     } catch (err: any) {
       console.error('Failed to read file:', err);
-      setNotice(genericSaveError());
+      setNotice(isFetchTimeout(err) ? analyzeTimeoutMessage() : genericSaveError());
     } finally {
       setLoading(false);
       e.target.value = '';
