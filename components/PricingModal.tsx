@@ -22,12 +22,15 @@ export default function PricingModal({ credits, planType, lang, onClose }: Prici
 
   return (
     <div className="fixed inset-0 z-50 bg-[#05020d]/85 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="bg-gradient-to-b from-[#1a0d38] to-[#0d061f] border border-amber-400/40 rounded-3xl max-w-2xl w-full p-6 sm:p-8 relative shadow-[0_0_60px_rgba(168,85,247,0.35)]">
+      {/* التصميم (2026-11-24): حد أقصى 90% من الشاشة مع تمرير داخلي،
+          حتى لا تنقطع النافذة على الهواتف القصيرة (~667 بكسل). */}
+      <div className="bg-gradient-to-b from-[#1a0d38] to-[#0d061f] border border-amber-400/40 rounded-3xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 sm:p-8 relative shadow-[0_0_60px_rgba(168,85,247,0.35)]">
         <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-purple-500 via-amber-400 to-fuchsia-500 rounded-t-3xl" />
 
         <button
           onClick={onClose}
-          className="absolute top-4 end-4 text-purple-300 hover:text-white cursor-pointer"
+          aria-label={lang === 'ar' ? 'إغلاق نافذة الباقات' : lang === 'tr' ? 'Pencereyi kapat' : 'Close pricing window'}
+          className="absolute top-4 end-4 min-w-11 min-h-11 flex items-center justify-center text-purple-300 hover:text-white cursor-pointer"
         >
           <X className="w-5 h-5" />
         </button>
@@ -47,7 +50,7 @@ export default function PricingModal({ credits, planType, lang, onClose }: Prici
               `Current balance: ${planType === 'pro' ? 'Unlimited (PRO)' : `${credits} credits`}`
             )}
           </p>
-          <p className="text-xs text-purple-200/70 mt-2">{t.paymentUnavailable}</p>
+          <p className="text-xs text-purple-200/85 mt-2">{t.paymentUnavailable}</p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -62,11 +65,11 @@ export default function PricingModal({ credits, planType, lang, onClose }: Prici
               </div>
               <div className="text-3xl font-extrabold text-white mb-1">
                 $5{' '}
-                <span className="text-xs font-normal text-purple-300/70">
+                <span className="text-xs font-normal text-purple-300/85">
                   {tr('/ 50 شرحاً', '/ 50 özet', '/ 50 summaries')}
                 </span>
               </div>
-              <p className="text-xs text-purple-200/70 mb-4">
+              <p className="text-xs text-purple-200/85 mb-4">
                 {tr(
                   'ادفع عند الحاجة — رصيد لا تنتهي صلاحيته أبداً',
                   'İhtiyaç duydukça ödeyin — krediler asla bitmez',
@@ -99,11 +102,11 @@ export default function PricingModal({ credits, planType, lang, onClose }: Prici
               </div>
               <div className="text-3xl font-extrabold text-amber-300 mb-1">
                 $12{' '}
-                <span className="text-xs font-normal text-purple-200/70">
+                <span className="text-xs font-normal text-purple-200/85">
                   {tr('/ شهرياً', '/ aylık', '/ month')}
                 </span>
               </div>
-              <p className="text-xs text-purple-200/70 mb-4">
+              <p className="text-xs text-purple-200/85 mb-4">
                 {tr(
                   'حوّل فيديوهاتك الطويلة وكتبك إلى ملخصات جاهزة لمتابعيك',
                   'Uzun videolarınızı ve kitaplarınızı takipçileriniz için hazır özetlere dönüştürün',
