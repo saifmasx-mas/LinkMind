@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { translations, Language } from '@/lib/translations';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { User } from '@supabase/supabase-js';
@@ -92,6 +92,10 @@ export default function Home() {
   const [telegramLinking, setTelegramLinking] = useState(false);
   const [resetSent, setResetSent] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
+  // التصميم (2026-11-24): حالة تسجيل الدخول + تأكيد الحذف + مرجع حقل الرابط.
+  const [authBusy, setAuthBusy] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const urlInputRef = useRef<HTMLInputElement>(null);
 
   const [askQuery, setAskQuery] = useState('');
   const [aiAnswer, setAiAnswer] = useState('');
@@ -188,6 +192,13 @@ export default function Home() {
     return () => subscription.unsubscribe();
   }, []);
 
+  // التصميم (2026-11-24): حدّث لغة الصفحة واتجاهها عند تبديل اللغة،
+  // حتى يقرأ قارئ الشاشة والمتصفح الاتجاه الصحيح.
+  useEffect(() => {
+    document.documentElement.lang = lang;
+    document.documentElement.dir = t.dir;
+  }, [lang, t.dir]);
+
   useEffect(() => {
     if (user) {
       fetchBookmarks();
@@ -262,6 +273,8 @@ export default function Home() {
     setAuthError('');
     if (!email || !password) return;
 
+    // التصميم (2026-11-24): نص واضح أثناء تسجيل الدخول بدل دوّارة صامتة.
+    setAuthBusy(true);
     const { error } = isSignUp
       ? await supabase.auth.signUp({
           email,
@@ -271,6 +284,7 @@ export default function Home() {
         })
       : await supabase.auth.signInWithPassword({ email, password });
 
+    setAuthBusy(false);
     if (error) {
       console.error('Auth failed:', error.message);
       setAuthError(genericAuthError());
@@ -279,6 +293,7 @@ export default function Home() {
 
   const handleGoogleLogin = async () => {
     setAuthError('');
+    setAuthBusy(true);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
@@ -286,6 +301,7 @@ export default function Home() {
         redirectTo: `${window.location.origin}/auth/callback`,
       },
     });
+    setAuthBusy(false);
     if (error) {
       console.error('Google sign-in failed:', error.message);
       setAuthError(genericAuthError());
@@ -331,7 +347,7 @@ export default function Home() {
   // 43-character token and opens the link it returns.
   const handleTelegramLink = async () => {
     if (!user) {
-      alert(t.telegramSignInRequired);
+      setNotice(t.telegramSignInRequired);
       return;
     }
     setTelegramLinking(true);
@@ -345,10 +361,10 @@ export default function Home() {
       if (res.ok && data.url) {
         window.open(data.url, '_blank', 'noopener,noreferrer');
       } else {
-        alert(t.telegramLinkFailed);
+        setNotice(t.telegramLinkFailed);
       }
     } catch {
-      alert(t.telegramLinkFailed);
+      setNotice(t.telegramLinkFailed);
     } finally {
       setTelegramLinking(false);
     }
@@ -400,7 +416,7 @@ export default function Home() {
 
     // I5: refuse a link that is already in this user's library.
     if (bookmarks.some((b) => b.url === urlInput.trim())) {
-      alert(t.duplicateLink);
+      setNotice(t.duplicateLink);
       return;
     }
 
@@ -429,7 +445,7 @@ export default function Home() {
       const data = await res.json();
 
       if (res.status === 409 || data.error === 'DUPLICATE_LINK') {
-        alert(t.duplicateLink);
+        setNotice(t.duplicateLink);
         return;
       }
 
@@ -440,7 +456,7 @@ export default function Home() {
       }
 
       if (res.status === 503 || data.error === 'AI_UNAVAILABLE') {
-        alert(
+        setNotice(
           lang === 'ar'
             ? 'خدمة الذكاء الاصطناعي غير متاحة حالياً. حاول لاحقاً، ولم يُخصم أي رصيد.'
             : lang === 'tr'
@@ -473,14 +489,14 @@ export default function Home() {
           setUrlInput('');
         } else {
           console.error('Failed to save bookmark:', dbError.message);
-          alert(genericSaveError());
+          setNotice(genericSaveError());
         }
       } else {
-        alert(data.error || (lang === 'ar' ? 'تأكد من صحة الرابط!' : 'Please enter a valid URL!'));
+        setNotice(data.error || (lang === 'ar' ? 'تأكد من صحة الرابط!' : 'Please enter a valid URL!'));
       }
     } catch (err) {
       console.error('Failed to save bookmark:', err);
-      alert(genericSaveError());
+      setNotice(genericSaveError());
     } finally {
       setLoading(false);
     }
@@ -561,7 +577,7 @@ export default function Home() {
           payload.bookMimeType = 'application/pdf';
           payload.bookType = 'pdf';
         } else {
-          alert(
+          setNotice(
             lang === 'ar'
               ? 'هذا الكتاب مصوّر (Scan) وحجمه كبير (أكثر من 1.8MB). جرب كتاباً نصياً أو ملفاً أصغر حجماً.'
               : 'Scanned PDF is larger than 1.8MB. Please use a text-based or smaller PDF.'
@@ -574,7 +590,7 @@ export default function Home() {
         const result = await mammoth.extractRawText({ arrayBuffer });
         const text = (result.value || '').replace(/\s+/g, ' ').trim();
         if (!text) {
-          alert(lang === 'ar' ? 'ملف Word فارغ!' : 'Word document is empty!');
+          setNotice(lang === 'ar' ? 'ملف Word فارغ!' : 'Word document is empty!');
           return;
         }
         payload.bookText = text.slice(0, 14000);
@@ -582,7 +598,7 @@ export default function Home() {
       } else {
         const text = (await file.text()).replace(/\s+/g, ' ').trim();
         if (!text) {
-          alert(lang === 'ar' ? 'الملف النصي فارغ!' : 'Text file is empty!');
+          setNotice(lang === 'ar' ? 'الملف النصي فارغ!' : 'Text file is empty!');
           return;
         }
         payload.bookText = text.slice(0, 14000);
@@ -610,7 +626,7 @@ export default function Home() {
       }
 
       if (res.status === 503 || data.error === 'AI_UNAVAILABLE') {
-        alert(
+        setNotice(
           lang === 'ar'
             ? 'خدمة الذكاء الاصطناعي غير متاحة حالياً. حاول لاحقاً، ولم يُخصم أي رصيد.'
             : lang === 'tr'
@@ -640,14 +656,14 @@ export default function Home() {
           await fetchBookmarks();
         } else {
           console.error('Failed to save book:', dbError.message);
-          alert(genericSaveError());
+          setNotice(genericSaveError());
         }
       } else {
-        alert(data.error || (lang === 'ar' ? 'حدث خطأ أثناء تحليل الكتاب' : 'Failed to analyze book'));
+        setNotice(data.error || (lang === 'ar' ? 'حدث خطأ أثناء تحليل الكتاب' : 'Failed to analyze book'));
       }
     } catch (err: any) {
       console.error('Failed to read file:', err);
-      alert(genericSaveError());
+      setNotice(genericSaveError());
     } finally {
       setLoading(false);
       e.target.value = '';
@@ -832,7 +848,7 @@ export default function Home() {
             {user && (
               <button
                 onClick={() => setShowPricingModal(true)}
-                className={`flex items-center gap-1.5 text-xs font-bold px-3.5 py-2 rounded-xl border transition cursor-pointer shadow-md ${
+                className={`flex items-center gap-1.5 text-xs font-bold px-3.5 py-2 min-h-9 rounded-xl border transition cursor-pointer shadow-md ${
                   planType === 'pro'
                     ? 'bg-gradient-to-r from-amber-500/25 to-yellow-500/20 text-amber-300 border-amber-400/50 shadow-amber-500/10'
                     : credits > 0
@@ -843,7 +859,7 @@ export default function Home() {
                 {planType === 'pro' ? (
                   <>
                     <Crown className="w-4 h-4 text-amber-400" />
-                    <span>PRO ∞</span>
+                    <span>{t.proBadge}</span>
                   </>
                 ) : (
                   <>
@@ -867,7 +883,7 @@ export default function Home() {
                 <button
                   key={l}
                   onClick={() => setLang(l)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold uppercase transition cursor-pointer ${
+                  className={`px-2.5 py-1 min-h-9 min-w-9 rounded-lg text-xs font-bold uppercase transition cursor-pointer ${
                     lang === l
                       ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-[0_0_12px_rgba(192,38,211,0.5)]'
                       : 'text-purple-200/70 hover:text-white'
@@ -885,7 +901,7 @@ export default function Home() {
                   onClick={handleTelegramLink}
                   disabled={telegramLinking}
                   title={t.telegramBot}
-                  className="flex items-center gap-1.5 text-xs font-semibold bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 text-amber-200 border border-purple-400/30 px-3.5 py-2 rounded-xl transition disabled:opacity-60 cursor-pointer"
+                  className="flex items-center gap-1.5 text-xs font-semibold bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 text-amber-200 border border-purple-400/30 px-3.5 py-2 min-h-9 rounded-xl transition disabled:opacity-60 cursor-pointer"
                 >
                   <Send className="w-3.5 h-3.5 text-amber-400" />
                   <span>{telegramLinking ? t.telegramConnecting : 'Telegram'}</span>
@@ -893,7 +909,7 @@ export default function Home() {
 
                 <button
                   onClick={handleLogout}
-                  className="flex items-center gap-1.5 text-xs font-medium bg-[#160b2e]/80 hover:bg-fuchsia-950/70 text-purple-200 hover:text-fuchsia-200 border border-purple-500/25 px-3 py-2 rounded-xl transition cursor-pointer"
+                  className="flex items-center gap-1.5 text-xs font-medium bg-[#160b2e]/80 hover:bg-fuchsia-950/70 text-purple-200 hover:text-fuchsia-200 border border-purple-500/25 px-3 py-2 min-h-9 rounded-xl transition cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                   <span>{t.logoutBtn}</span>
@@ -921,10 +937,10 @@ export default function Home() {
                   <Lock className="w-7 h-7 text-amber-400" />
                 </div>
               </div>
-              <h2 className="text-2xl font-extrabold text-center text-white mb-2">
+              <h1 className="text-2xl font-extrabold text-center text-white mb-2">
                 {t.loginTitle}
-              </h2>
-              <p className="text-sm text-center text-purple-200/75 mb-6">{t.tagline}</p>
+              </h1>
+              <p className="text-sm text-center text-purple-200/85 mb-6">{t.tagline}</p>
 
               {/* N11: say plainly when Supabase is not configured instead of
                   showing cryptic network errors on every action. */}
@@ -945,19 +961,29 @@ export default function Home() {
               )}
 
               <div className="space-y-4">
+                <label htmlFor="login-email" className="sr-only">
+                  {t.emailPlaceholder}
+                </label>
                 <input
+                  id="login-email"
                   type="email"
+                  autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder={t.emailPlaceholder}
-                  className="w-full bg-[#090514] border border-purple-500/30 rounded-xl px-4 py-3 text-sm text-white placeholder-purple-300/40 focus:outline-none focus:border-amber-400 transition"
+                  className="w-full bg-[#090514] border border-purple-500/30 rounded-xl px-4 py-3 text-sm text-white placeholder-purple-300/65 focus:outline-none focus:border-amber-400 transition"
                 />
+                <label htmlFor="login-password" className="sr-only">
+                  {t.passwordPlaceholder}
+                </label>
                 <input
+                  id="login-password"
                   type="password"
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={t.passwordPlaceholder}
-                  className="w-full bg-[#090514] border border-purple-500/30 rounded-xl px-4 py-3 text-sm text-white placeholder-purple-300/40 focus:outline-none focus:border-amber-400 transition"
+                  className="w-full bg-[#090514] border border-purple-500/30 rounded-xl px-4 py-3 text-sm text-white placeholder-purple-300/65 focus:outline-none focus:border-amber-400 transition"
                 />
 
                 <div className="flex items-center justify-between">
@@ -977,13 +1003,15 @@ export default function Home() {
                 <div className="flex flex-col gap-2.5 pt-2">
                   <button
                     onClick={() => handleAuth(false)}
-                    className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-[#180a2e] font-extrabold py-3 rounded-xl transition cursor-pointer shadow-[0_0_20px_rgba(251,191,36,0.35)]"
+                    disabled={authBusy}
+                    className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-[#180a2e] font-extrabold py-3 rounded-xl transition cursor-pointer shadow-[0_0_20px_rgba(251,191,36,0.35)] disabled:opacity-60"
                   >
-                    {t.loginBtn}
+                    {authBusy ? t.signingIn : t.loginBtn}
                   </button>
                   <button
                     onClick={() => handleAuth(true)}
-                    className="w-full bg-purple-900/50 hover:bg-purple-800/60 text-purple-100 border border-purple-500/30 font-semibold py-3 rounded-xl transition cursor-pointer"
+                    disabled={authBusy}
+                    className="w-full bg-purple-900/50 hover:bg-purple-800/60 text-purple-100 border border-purple-500/30 font-semibold py-3 rounded-xl transition cursor-pointer disabled:opacity-60"
                   >
                     {t.signupBtn}
                   </button>
@@ -991,7 +1019,7 @@ export default function Home() {
 
                 <div className="relative my-3 flex items-center justify-center">
                   <span className="border-t border-purple-500/20 w-full"></span>
-                  <span className="bg-[#120926] px-3 text-xs text-amber-300/80 font-bold">OR</span>
+                  <span className="bg-[#120926] px-3 text-xs text-amber-300/80 font-bold">{t.orDivider}</span>
                   <span className="border-t border-purple-500/20 w-full"></span>
                 </div>
 
@@ -1026,38 +1054,43 @@ export default function Home() {
         ) : (
           /* لوحة التحكم السحابية */
           <main className="max-w-6xl mx-auto px-4 py-8">
-            {/* المجرة المدارية التفاعلية في أعلى ومنتصف الصفحة */}
+            {/* التصميم (2026-11-24): على الهاتف يظهر العنوان ثم نموذج
+                الإضافة فوق المجرة، حتى لا يُدفع زر الحفظ تحت الشاشة. */}
+            <div className="flex flex-col">
+            <div className="order-3 sm:order-1">
             <OrbitalHub
               selectedSource={selectedSource}
               onSelectSource={setSelectedSource}
               counts={sourceCounts}
               lang={lang}
             />
+            </div>
 
-            <div className="text-center max-w-2xl mx-auto mb-8">
+            <div className="order-1 sm:order-2 text-center max-w-2xl mx-auto mb-8">
               <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-purple-900/40 border border-amber-400/30 text-amber-300 text-xs font-bold mb-3 shadow-[0_0_15px_rgba(251,191,36,0.15)]">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>AI Tutorial & Book-to-Checklist Engine</span>
+                <span>{t.engineBadge}</span>
               </div>
               <h1 className="text-3xl sm:text-4xl font-extrabold mb-3 text-white drop-shadow-[0_2px_15px_rgba(168,85,247,0.35)]">
                 {t.tagline}
               </h1>
               <div className="h-0.5 w-40 mx-auto bg-gradient-to-r from-transparent via-amber-400 to-transparent mb-2" />
-              <p className="text-xs text-purple-300/60">{user.email}</p>
+              <p className="text-xs text-purple-300/80">{user.email}</p>
             </div>
 
             {/* شريط إضافة رابط أو رفع كتاب PDF / Word */}
             <form
               onSubmit={handleAddBookmark}
-              className="max-w-3xl mx-auto mb-6 flex flex-col sm:flex-row gap-2.5 bg-[#120926]/80 backdrop-blur-xl p-2.5 rounded-2xl border border-purple-500/30 shadow-[0_0_35px_rgba(126,34,206,0.2)]"
+              className="order-2 sm:order-3 max-w-3xl mx-auto mb-6 flex flex-col sm:flex-row gap-2.5 bg-[#120926]/80 backdrop-blur-xl p-2.5 rounded-2xl border border-purple-500/30 shadow-[0_0_35px_rgba(126,34,206,0.2)]"
             >
               <input
+                ref={urlInputRef}
                 type="url"
                 required
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
                 placeholder={t.placeholder}
-                className="flex-1 bg-[#080412] border border-purple-500/25 rounded-xl px-4 py-3 text-white placeholder-purple-300/40 focus:outline-none focus:border-amber-400 transition"
+                className="flex-1 bg-[#080412] border border-purple-500/25 rounded-xl px-4 py-3 text-white placeholder-purple-300/65 focus:outline-none focus:border-amber-400 transition"
               />
 
               {/* زر رفع كتاب PDF أو Word */}
@@ -1099,6 +1132,18 @@ export default function Home() {
                 <span>{loading ? t.savingBtn : t.saveBtn}</span>
               </button>
             </form>
+            </div>
+
+            {/* التصميم (2026-11-24): مؤشر تقدم أثناء التحليل الطويل،
+                بدل أيقونة دوّارة بلا نص. */}
+            {loading && (
+              <div role="status" className="max-w-3xl mx-auto mb-6">
+                <div className="h-2 rounded-full bg-purple-900/60 overflow-hidden">
+                  <div className="h-full w-1/2 rounded-full bg-gradient-to-r from-amber-400 to-yellow-400 animate-pulse" />
+                </div>
+                <p className="text-xs text-purple-200/85 text-center mt-2">{t.savingBtn}</p>
+              </div>
+            )}
 
             {/* تنبيه عند فشل جلب محتوى الرابط: الملخص مبني على العنوان فقط */}
             {notice && (
@@ -1107,7 +1152,8 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setNotice('')}
-                  className="text-amber-300/70 hover:text-white shrink-0 cursor-pointer"
+                  aria-label={lang === 'ar' ? 'إغلاق التنبيه' : lang === 'tr' ? 'Uyarıyı kapat' : 'Dismiss notice'}
+                  className="min-w-11 min-h-11 flex items-center justify-center text-amber-300/70 hover:text-white shrink-0 cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -1125,7 +1171,7 @@ export default function Home() {
                       value={askQuery}
                       onChange={(e) => setAskQuery(e.target.value)}
                       placeholder={t.askPlaceholder}
-                      className="w-full bg-[#080412]/90 border border-purple-500/30 rounded-xl ps-10 pe-4 py-2.5 text-sm text-white placeholder-purple-300/45 focus:outline-none focus:border-fuchsia-400"
+                      className="w-full bg-[#080412]/90 border border-purple-500/30 rounded-xl ps-10 pe-4 py-2.5 text-sm text-white placeholder-purple-300/65 focus:outline-none focus:border-fuchsia-400"
                     />
                   </div>
                   <button
@@ -1139,10 +1185,11 @@ export default function Home() {
                 </form>
 
                 {aiAnswer && (
-                  <div className="mt-4 p-4 bg-[#090514]/95 rounded-xl border border-amber-400/30 relative">
+                  <div className="mt-4 pt-4 border-t border-fuchsia-500/20 relative">
                     <button
                       onClick={() => setAiAnswer('')}
-                      className="absolute top-3 end-3 text-purple-300/60 hover:text-white cursor-pointer"
+                      aria-label={lang === 'ar' ? 'إغلاق الإجابة' : lang === 'tr' ? 'Yanıtı kapat' : 'Dismiss answer'}
+                      className="absolute top-3 end-3 min-w-11 min-h-11 flex items-center justify-center text-purple-300/60 hover:text-white cursor-pointer"
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -1164,7 +1211,7 @@ export default function Home() {
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder={t.searchPlaceholder}
-                  className="w-full bg-[#080412] border border-purple-500/25 rounded-xl ps-10 pe-4 py-2 text-sm text-white placeholder-purple-300/40 focus:outline-none focus:border-amber-400"
+                  className="w-full bg-[#080412] border border-purple-500/25 rounded-xl ps-10 pe-4 py-2 text-sm text-white placeholder-purple-300/65 focus:outline-none focus:border-amber-400"
                 />
               </div>
 
@@ -1173,7 +1220,7 @@ export default function Home() {
                   <button
                     key={key}
                     onClick={() => setSelectedCategory(key)}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                    className={`px-3.5 py-1.5 min-h-9 rounded-xl text-xs font-bold transition cursor-pointer ${
                       selectedCategory === key
                         ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-[0_0_15px_rgba(192,38,211,0.4)]'
                         : 'bg-[#1a0e36] text-purple-200/80 hover:text-white border border-purple-500/20'
@@ -1187,8 +1234,15 @@ export default function Home() {
 
             {/* شبكة البطاقات */}
             {filteredBookmarks.length === 0 ? (
-              <div className="text-center py-20 border border-dashed border-purple-500/30 bg-[#120926]/40 rounded-3xl text-purple-300/60">
-                {t.emptyState}
+              <div className="text-center py-20 px-4 border border-dashed border-purple-500/30 bg-[#120926]/40 rounded-3xl">
+                <p className="text-purple-300/80 mb-5">{t.emptyState}</p>
+                <button
+                  type="button"
+                  onClick={() => urlInputRef.current?.focus()}
+                  className="bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 text-[#180a2e] font-extrabold px-6 py-3 min-h-11 rounded-xl cursor-pointer shadow-[0_0_20px_rgba(251,191,36,0.35)]"
+                >
+                  {t.emptyStateBtn}
+                </button>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1216,12 +1270,12 @@ export default function Home() {
                               {t.categories[item.category as keyof typeof t.categories] ||
                                 item.category}
                             </span>
-                            <span className="text-xs text-purple-300/50">{item.created_at}</span>
+                            <span className="text-xs text-purple-300/80">{item.created_at}</span>
                           </div>
-                          <h3 className="font-bold text-lg text-white mb-2 line-clamp-2 group-hover:text-amber-200 transition">
+                          <h2 className="font-bold text-lg text-white mb-2 line-clamp-2 group-hover:text-amber-200 transition">
                             {item.title}
-                          </h3>
-                          <p className="text-sm text-purple-200/75 leading-relaxed mb-4">
+                          </h2>
+                          <p className="text-sm text-purple-200/85 leading-relaxed mb-4 line-clamp-4">
                             {item.summary}
                           </p>
 
@@ -1248,7 +1302,16 @@ export default function Home() {
                                   return (
                                     <li
                                       key={idx}
+                                      role="button"
+                                      tabIndex={0}
+                                      aria-pressed={isDone}
                                       onClick={() => toggleStep(item.id, idx)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                          e.preventDefault();
+                                          toggleStep(item.id, idx);
+                                        }
+                                      }}
                                       className={`flex items-start gap-2 text-xs p-2.5 rounded-xl cursor-pointer transition border ${
                                         isDone
                                           ? 'bg-emerald-950/30 border-emerald-500/20 text-purple-300/40 line-through'
@@ -1295,7 +1358,7 @@ export default function Home() {
                               <button
                                 onClick={() => handleCopyNotion(item)}
                                 title="Copy Markdown for Notion"
-                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2.5 py-1 rounded-lg flex items-center gap-1 transition cursor-pointer"
+                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2.5 py-1 min-h-9 rounded-lg flex items-center gap-1 transition cursor-pointer"
                               >
                                 {copiedId === item.id ? (
                                   <Check className="w-3 h-3 text-emerald-400" />
@@ -1308,7 +1371,7 @@ export default function Home() {
                               <button
                                 onClick={() => handleExportPDF(item)}
                                 title="Export as PDF"
-                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2.5 py-1 rounded-lg flex items-center gap-1 transition cursor-pointer"
+                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2.5 py-1 min-h-9 rounded-lg flex items-center gap-1 transition cursor-pointer"
                               >
                                 <FileText className="w-3 h-3 text-amber-400" />
                                 <span>PDF</span>
@@ -1318,8 +1381,10 @@ export default function Home() {
                         </div>
 
                         <button
-                          onClick={() => handleDelete(item.id)}
-                          className="text-xs text-fuchsia-400/80 hover:text-fuchsia-300 flex items-center gap-1 cursor-pointer"
+                          onClick={() => setPendingDeleteId(item.id)}
+                          aria-label={`${t.deleteBtn}: ${item.title}`}
+                          title={t.deleteBtn}
+                          className="min-w-11 min-h-11 px-2 text-xs text-fuchsia-400/80 hover:text-fuchsia-300 flex items-center justify-center gap-1 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -1332,6 +1397,40 @@ export default function Home() {
           </main>
         )}
       </div>
+
+      {/* التصميم (2026-11-24): تأكيد داخل التطبيق قبل الحذف النهائي. */}
+      {pendingDeleteId && (
+        <div
+          className="fixed inset-0 z-50 bg-[#05020d]/85 backdrop-blur-md flex items-center justify-center p-4"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="delete-confirm-title"
+        >
+          <div className="bg-gradient-to-b from-[#1a0d38] to-[#0d061f] border border-fuchsia-500/40 rounded-3xl max-w-sm w-full p-6 relative shadow-[0_0_60px_rgba(192,38,211,0.35)]">
+            <h2 id="delete-confirm-title" className="text-lg font-extrabold text-white mb-2">
+              {t.deleteConfirmTitle}
+            </h2>
+            <p className="text-sm text-purple-200/85 mb-6">{t.deleteConfirmText}</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  handleDelete(pendingDeleteId);
+                  setPendingDeleteId(null);
+                }}
+                className="flex-1 min-h-11 bg-gradient-to-r from-fuchsia-600 to-rose-600 text-white font-bold py-2.5 rounded-xl cursor-pointer"
+              >
+                {t.confirmDeleteBtn}
+              </button>
+              <button
+                onClick={() => setPendingDeleteId(null)}
+                className="flex-1 min-h-11 bg-purple-900/50 text-purple-100 border border-purple-500/30 font-semibold py-2.5 rounded-xl cursor-pointer"
+              >
+                {t.cancelBtn}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* نافذة الباقات والرصيد */}
       {showPricingModal && (
