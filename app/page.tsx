@@ -6,6 +6,9 @@ import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { User } from '@supabase/supabase-js';
 import OrbitalHub, { SourceFilter } from '@/components/OrbitalHub';
 import PricingModal from '@/components/PricingModal';
+import TurnstileWidget, {
+  TurnstileWidgetHandle,
+} from '@/components/TurnstileWidget';
 import {
   Plus,
   Search,
@@ -62,6 +65,14 @@ export default function Home() {
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
 
+  // Cloudflare Turnstile (2026-11-24): the "are you a robot" check on the
+  // login page. The public site key comes from the env var; when it is
+  // missing (local dev without the key) the widget is skipped and login
+  // works exactly as before. Production has the key set before deploy.
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
+  const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+
   // حالة الرصيد والباقة
   const [credits, setCredits] = useState<number>(5);
   const [planType, setPlanType] = useState<'free' | 'pro'>('free');
@@ -117,6 +128,42 @@ export default function Home() {
       : lang === 'tr'
       ? 'Giriş yapılamadı. E-posta adresinizi ve şifrenizi kontrol edip tekrar deneyin.'
       : 'Could not sign in. Check your email and password and try again.';
+
+  // Cloudflare Turnstile: verify the token on the server before any
+  // Supabase auth call. A token is single-use, so a failed attempt resets
+  // the widget for a fresh challenge.
+  const resetTurnstile = () => {
+    turnstileRef.current?.reset();
+    setTurnstileToken(null);
+  };
+
+  const verifyTurnstile = async (): Promise<boolean> => {
+    if (!turnstileSiteKey) return true;
+    if (!turnstileToken) {
+      setAuthError(t.turnstileRequired);
+      return false;
+    }
+    try {
+      const res = await fetch('/api/verify-turnstile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: turnstileToken }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+      };
+      if (!res.ok || !data.success) {
+        setAuthError(t.turnstileFailed);
+        resetTurnstile();
+        return false;
+      }
+      return true;
+    } catch {
+      setAuthError(t.turnstileFailed);
+      resetTurnstile();
+      return false;
+    }
+  };
 
   const genericSaveError = (): string =>
     lang === 'ar'
@@ -273,6 +320,9 @@ export default function Home() {
     setAuthError('');
     if (!email || !password) return;
 
+    // Cloudflare Turnstile: no auth call before the human check passes.
+    if (!(await verifyTurnstile())) return;
+
     // التصميم (2026-11-24): نص واضح أثناء تسجيل الدخول بدل دوّارة صامتة.
     setAuthBusy(true);
     const { error } = isSignUp
@@ -288,11 +338,16 @@ export default function Home() {
     if (error) {
       console.error('Auth failed:', error.message);
       setAuthError(genericAuthError());
+      // The token was already spent on the server check, so it cannot be
+      // reused for the next attempt.
+      resetTurnstile();
     }
   };
 
   const handleGoogleLogin = async () => {
     setAuthError('');
+    // Cloudflare Turnstile: the Google button needs the human check too.
+    if (!(await verifyTurnstile())) return;
     setAuthBusy(true);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
@@ -305,6 +360,7 @@ export default function Home() {
     if (error) {
       console.error('Google sign-in failed:', error.message);
       setAuthError(genericAuthError());
+      resetTurnstile();
     }
   };
 
@@ -999,6 +1055,20 @@ export default function Home() {
                     <span className="text-xs text-emerald-300">{t.resetEmailSent}</span>
                   )}
                 </div>
+
+                {/* Cloudflare Turnstile (2026-11-24): the "are you a robot"
+                    check. Hidden when the site key is not configured. */}
+                {turnstileSiteKey && (
+                  <div className="flex justify-center pt-1">
+                    <TurnstileWidget
+                      ref={turnstileRef}
+                      siteKey={turnstileSiteKey}
+                      onVerify={(token) => setTurnstileToken(token)}
+                      onExpire={() => setTurnstileToken(null)}
+                      onError={() => setTurnstileToken(null)}
+                    />
+                  </div>
+                )}
 
                 <div className="flex flex-col gap-2.5 pt-2">
                   <button
