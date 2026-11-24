@@ -102,6 +102,25 @@ export default function Home() {
   // button is hidden instead of linking to somebody else's bot.
   const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME;
 
+  // SECURITY (2026-11-24 audit): Supabase's raw messages distinguish
+  // "user not found" from "wrong password" (and "email already
+  // registered"), which lets anyone probe whether an email has an
+  // account. Show one generic message for every auth failure; the
+  // technical detail stays in the console only.
+  const genericAuthError = (): string =>
+    lang === 'ar'
+      ? 'تعذر تسجيل الدخول. تحقق من بريدك الإلكتروني وكلمة المرور وحاول مجدداً.'
+      : lang === 'tr'
+      ? 'Giriş yapılamadı. E-posta adresinizi ve şifrenizi kontrol edip tekrar deneyin.'
+      : 'Could not sign in. Check your email and password and try again.';
+
+  const genericSaveError = (): string =>
+    lang === 'ar'
+      ? 'تعذر الحفظ حالياً. حاول لاحقاً.'
+      : lang === 'tr'
+      ? 'Şu anda kaydedilemedi. Daha sonra tekrar deneyin.'
+      : 'Could not save right now. Please try again later.';
+
   // Authorization header for the authenticated API routes (C1).
   const authHeaders = async (): Promise<Record<string, string>> => {
     const {
@@ -221,7 +240,10 @@ export default function Home() {
     // not the only one).
     const { data, error } = await supabase
       .from('bookmarks')
-      .select('*')
+      // SECURITY (2026-11-24 audit): select only the columns the UI uses
+      // instead of '*', so a future private column can never leak to the
+      // browser. `embedding` is still needed for local semantic search.
+      .select('id, url, title, summary, category, image_url, checklist, embedding, created_at')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
@@ -250,7 +272,8 @@ export default function Home() {
       : await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
-      setAuthError(error.message);
+      console.error('Auth failed:', error.message);
+      setAuthError(genericAuthError());
     }
   };
 
@@ -264,7 +287,8 @@ export default function Home() {
       },
     });
     if (error) {
-      setAuthError(error.message);
+      console.error('Google sign-in failed:', error.message);
+      setAuthError(genericAuthError());
     }
   };
 
@@ -289,7 +313,14 @@ export default function Home() {
     });
     setResetBusy(false);
     if (error) {
-      setAuthError(error.message);
+      console.error('Password reset failed:', error.message);
+      setAuthError(
+        lang === 'ar'
+          ? 'تعذر إرسال رسالة إعادة تعيين كلمة المرور. حاول لاحقاً.'
+          : lang === 'tr'
+          ? 'Şifre sıfırlama e-postası gönderilemedi. Daha sonra tekrar deneyin.'
+          : 'Could not send the password reset email. Please try again later.'
+      );
     } else {
       setResetSent(true);
     }
@@ -441,14 +472,15 @@ export default function Home() {
           await fetchBookmarks();
           setUrlInput('');
         } else {
-          alert('Database error: ' + dbError.message);
+          console.error('Failed to save bookmark:', dbError.message);
+          alert(genericSaveError());
         }
       } else {
         alert(data.error || (lang === 'ar' ? 'تأكد من صحة الرابط!' : 'Please enter a valid URL!'));
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : '';
-      alert((lang === 'ar' ? 'تعذر حفظ الرابط: ' : 'Error processing link: ') + errorMessage);
+      console.error('Failed to save bookmark:', err);
+      alert(genericSaveError());
     } finally {
       setLoading(false);
     }
@@ -607,13 +639,15 @@ export default function Home() {
           if (data.contentWarning) setNotice(t.contentWarning);
           await fetchBookmarks();
         } else {
-          alert('Database error: ' + dbError.message);
+          console.error('Failed to save book:', dbError.message);
+          alert(genericSaveError());
         }
       } else {
         alert(data.error || (lang === 'ar' ? 'حدث خطأ أثناء تحليل الكتاب' : 'Failed to analyze book'));
       }
     } catch (err: any) {
-      alert((lang === 'ar' ? 'تعذر قراءة الملف: ' : 'Error reading file: ') + (err?.message || ''));
+      console.error('Failed to read file:', err);
+      alert(genericSaveError());
     } finally {
       setLoading(false);
       e.target.value = '';
@@ -663,7 +697,7 @@ export default function Home() {
     printWindow.document.write(`
       <html dir="${t.dir}">
         <head>
-          <title>${item.title} - LinkMind Checklist</title>
+          <title>${escapeHtml(item.title)} - LinkMind Checklist</title>
           <style>
             body { font-family: system-ui, -apple-system, sans-serif; padding: 40px; color: #1e1b4b; line-height: 1.6; }
             .badge { display: inline-block; background: linear-gradient(90deg, #7e22ce, #db2777); color: #fff; padding: 4px 14px; border-radius: 999px; font-size: 12px; font-weight: bold; }
@@ -711,6 +745,14 @@ export default function Home() {
       const data = await res.json();
       if (res.ok) {
         setAiAnswer(data.answer);
+        // /api/ask now deducts a credit for AI answers; keep the header
+        // balance in sync. The local fallback answer deducts nothing.
+        if (typeof data.remainingCredits === 'number') {
+          setCredits(data.remainingCredits);
+        }
+      } else if (res.status === 402 || data.error === 'OUT_OF_CREDITS') {
+        setCredits(0);
+        setShowPricingModal(true);
       }
     } catch {
       setAiAnswer('حدث خطأ أثناء استشارة الذاكرة.');
