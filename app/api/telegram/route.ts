@@ -8,6 +8,10 @@ import { generateContentWithFallback } from '@/lib/gemini';
 
 export const runtime = 'nodejs';
 
+// I3: the default Hobby limit is 10s; Gemini + embedding + page fetch need
+// the same 60s budget the analyze route already uses.
+export const maxDuration = 60;
+
 interface TelegramMessage {
   chat?: { id?: number };
   text?: string;
@@ -106,6 +110,22 @@ export async function POST(request: Request) {
         await sendTelegramMessage(
           chatId,
           'انتهت صلاحية رابط الربط أو استُخدم من قبل. أنشئ رابطاً جديداً من LinkMind.',
+          botToken
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // N9: never silently steal a chat that is already linked to another
+      // user. The previous owner must unlink first.
+      const { data: existingLink } = await admin
+        .from('telegram_links')
+        .select('user_id')
+        .eq('chat_id', chatId)
+        .maybeSingle();
+      if (existingLink && existingLink.user_id !== tokenData.user_id) {
+        await sendTelegramMessage(
+          chatId,
+          'هذا الحساب في Telegram مربوط بمستخدم آخر في LinkMind. ألغِ الربط أولاً ثم حاول مجدداً.',
           botToken
         );
         return NextResponse.json({ ok: true });
@@ -223,6 +243,22 @@ export async function POST(request: Request) {
       } catch (error) {
         console.error('Telegram link analysis failed:', error);
       }
+    }
+
+    // I5: do not save the same link twice for the same user.
+    const { data: existingBookmark } = await admin
+      .from('bookmarks')
+      .select('id')
+      .eq('user_id', linkData.user_id)
+      .eq('url', url.toString())
+      .maybeSingle();
+    if (existingBookmark) {
+      await sendTelegramMessage(
+        chatId,
+        `📌 هذا الرابط محفوظ لديك مسبقاً:\n\n${finalTitle}`,
+        botToken
+      );
+      return NextResponse.json({ ok: true });
     }
 
     const { error: insertError } = await admin.from('bookmarks').insert({

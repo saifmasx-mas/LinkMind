@@ -5,7 +5,7 @@ export const viewport: Viewport = {
   themeColor: '#0d071c',
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
+  // maximumScale: 1 was removed: it prevented pinch-to-zoom (accessibility).
 };
 
 export const metadata: Metadata = {

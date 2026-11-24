@@ -1,16 +1,26 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 import { generateContentWithFallback } from '@/lib/gemini';
+import { getAuthenticatedUserId } from '@/lib/auth';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
   try {
+    // C1: this route spends Gemini quota, so it must not be callable
+    // anonymously. The caller proves who they are with their session token.
+    const userId = await getAuthenticatedUserId(req);
+    if (!userId) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
+
     const { query, bookmarks, lang, mode } = await req.json();
 
     if (!query) {
       return NextResponse.json({ error: 'Missing query' }, { status: 400 });
     }
+
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
     // 1. وضع توليد البصمة الدلالية للبحث (Embedding)
     if (mode === 'embed') {
