@@ -5,6 +5,8 @@ import { GoogleGenAI, Type } from '@google/genai';
 import { createSupabaseAdminClient } from '@/lib/supabase-admin';
 import { fetchPublicUrl } from '@/lib/safe-fetch';
 import { generateContentWithFallback } from '@/lib/gemini';
+import { deductCredit } from '@/lib/credits';
+import { checkRateLimit, pruneRateLimitBuckets } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 
@@ -77,6 +79,22 @@ export async function POST(request: Request) {
   const text = message?.text?.trim();
   if (typeof chatId !== 'number' || !Number.isSafeInteger(chatId) || !text) {
     return NextResponse.json({ ok: true });
+  }
+
+  // SECURITY (2026-11-24 audit): 20 updates per minute per chat, so one
+  // chat cannot flood the webhook and burn the Gemini quota. Telegram
+  // retries a 429 with backoff; the duplicate-link guard below prevents
+  // a retry from saving (or charging) twice.
+  pruneRateLimitBuckets();
+  const telegramLimit = checkRateLimit(`telegram:${chatId}`, 20, 60_000);
+  if (!telegramLimit.allowed) {
+    return NextResponse.json(
+      { error: 'Too many requests' },
+      {
+        status: 429,
+        headers: { 'Retry-After': String(Math.ceil((telegramLimit.resetAt - Date.now()) / 1000)) },
+      }
+    );
   }
 
   try {
@@ -175,6 +193,61 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
+    // I5: do not save the same link twice for the same user. Checked here,
+    // BEFORE any Gemini call, so a duplicate never spends AI quota.
+    const { data: existingBookmark } = await admin
+      .from('bookmarks')
+      .select('id')
+      .eq('user_id', linkData.user_id)
+      .eq('url', url.toString())
+      .maybeSingle();
+    if (existingBookmark) {
+      await sendTelegramMessage(
+        chatId,
+        `📌 هذا الرابط محفوظ لديك مسبقاً:\n\n${url.toString()}`,
+        botToken
+      );
+      return NextResponse.json({ ok: true });
+    }
+
+    // SECURITY (2026-11-24 audit, high): the webhook used to call Gemini
+    // and save bookmarks with no credit check at all. Check the balance
+    // BEFORE spending any AI quota; deduct once, after the bookmark is
+    // actually saved (see below). PRO users are exempt, like /api/analyze.
+    let { data: tgProfile, error: tgProfileError } = await admin
+      .from('user_profiles')
+      .select('credits, plan_type')
+      .eq('user_id', linkData.user_id)
+      .maybeSingle();
+    if (tgProfileError) {
+      console.error('Failed to load Telegram user profile:', tgProfileError.message);
+      await sendTelegramMessage(chatId, 'تعذر التحقق من رصيدك حالياً. حاول مرة أخرى لاحقاً.', botToken);
+      return NextResponse.json({ ok: true });
+    }
+    if (!tgProfile) {
+      const { data: newProfile, error: insertError } = await admin
+        .from('user_profiles')
+        .insert({ user_id: linkData.user_id, credits: 5, plan_type: 'free' })
+        .select('credits, plan_type')
+        .single();
+      if (insertError || !newProfile) {
+        console.error('Failed to create Telegram user profile:', insertError?.message);
+        await sendTelegramMessage(chatId, 'تعذر التحقق من رصيدك حالياً. حاول مرة أخرى لاحقاً.', botToken);
+        return NextResponse.json({ ok: true });
+      }
+      tgProfile = newProfile;
+    }
+    const tgIsPro = tgProfile?.plan_type === 'pro';
+    const tgCredits = tgProfile?.credits ?? 0;
+    if (!tgIsPro && tgCredits <= 0) {
+      await sendTelegramMessage(
+        chatId,
+        '⚠️ انتهى رصيدك المجاني. افتح LinkMind وترقَّ إلى PRO لمتابعة حفظ الروابط.',
+        botToken
+      );
+      return NextResponse.json({ ok: true });
+    }
+
     await sendTelegramMessage(chatId, '⏳ جاري تحليل الرابط وحفظه...', botToken);
 
     let rawTitle = '';
@@ -245,22 +318,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // I5: do not save the same link twice for the same user.
-    const { data: existingBookmark } = await admin
-      .from('bookmarks')
-      .select('id')
-      .eq('user_id', linkData.user_id)
-      .eq('url', url.toString())
-      .maybeSingle();
-    if (existingBookmark) {
-      await sendTelegramMessage(
-        chatId,
-        `📌 هذا الرابط محفوظ لديك مسبقاً:\n\n${finalTitle}`,
-        botToken
-      );
-      return NextResponse.json({ ok: true });
-    }
-
     const { error: insertError } = await admin.from('bookmarks').insert({
       user_id: linkData.user_id,
       url: url.toString(),
@@ -275,6 +332,15 @@ export async function POST(request: Request) {
       console.error('Failed to save Telegram bookmark:', insertError.message);
       await sendTelegramMessage(chatId, 'تعذر حفظ الرابط حالياً. حاول مرة أخرى لاحقاً.', botToken);
       return NextResponse.json({ error: 'Could not save bookmark' }, { status: 500 });
+    }
+
+    // Deduct one credit now that the bookmark is saved (no deduct on
+    // duplicates — handled above — or on a failed save).
+    if (!tgIsPro) {
+      const newCredits = await deductCredit(admin, linkData.user_id, tgCredits);
+      if (newCredits === null) {
+        console.warn('Telegram bookmark saved but credit deduction failed for user:', linkData.user_id);
+      }
     }
 
     await sendTelegramMessage(

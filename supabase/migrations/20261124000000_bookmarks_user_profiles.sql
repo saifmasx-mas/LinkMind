@@ -67,23 +67,27 @@ create table if not exists public.user_profiles (
 );
 
 alter table public.user_profiles enable row level security;
+-- SECURITY FIX (2026-11-24 audit, critical): a user must NEVER be able to
+-- write their own profile row. The previous version granted insert/update
+-- to authenticated with owner-only policies, which let any signed-in user
+-- set their own plan_type = 'pro' and credits = 9999 from the browser
+-- console, bypassing the whole credit system. Only the server, using the
+-- service-role (admin) client that bypasses RLS, may create a profile row
+-- and change credits / plan_type. Users may only READ their own row
+-- (credits / plan_type for the UI). There is deliberately NO insert or
+-- update policy on this table for authenticated users.
 revoke all on public.user_profiles from anon, authenticated;
-grant select, insert, update on public.user_profiles to authenticated;
+grant select on public.user_profiles to authenticated;
 grant all on public.user_profiles to service_role;
 
 drop policy if exists "user_profiles_owner_select" on public.user_profiles;
 create policy "user_profiles_owner_select" on public.user_profiles
   for select to authenticated using (user_id = auth.uid());
 
+-- Remove the dangerous policies if a previous run of this migration (or a
+-- manual setup) created them. Do NOT re-create insert/update policies here.
 drop policy if exists "user_profiles_owner_insert" on public.user_profiles;
-create policy "user_profiles_owner_insert" on public.user_profiles
-  for insert to authenticated with check (user_id = auth.uid());
-
 drop policy if exists "user_profiles_owner_update" on public.user_profiles;
-create policy "user_profiles_owner_update" on public.user_profiles
-  for update to authenticated
-  using (user_id = auth.uid())
-  with check (user_id = auth.uid());
 
 -- Atomic credit deduction (I8): one statement checks the balance and
 -- deducts, so two simultaneous requests cannot spend the same credit.

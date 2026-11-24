@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 import { generateContentWithFallback } from '@/lib/gemini';
 import { getAuthenticatedUserId } from '@/lib/auth';
+import { createSupabaseAdminClient } from '@/lib/supabase-admin';
+import { deductCredit } from '@/lib/credits';
+import { checkRateLimit, pruneRateLimitBuckets } from '@/lib/rate-limit';
 
 export const maxDuration = 60;
 
@@ -20,10 +23,27 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing query' }, { status: 400 });
     }
 
+    pruneRateLimitBuckets();
+
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
     // 1. وضع توليد البصمة الدلالية للبحث (Embedding)
+    // SECURITY (2026-11-24 audit): embedding is called on every keystroke
+    // (debounced 500ms in app/page.tsx), so charging a credit per call
+    // would drain a user's balance in one search and break the library
+    // search. It is NOT charged. It is still authenticated and rate
+    // limited (30/min per user), and the embedding model call is cheap.
     if (mode === 'embed') {
+      const embedLimit = checkRateLimit(`ask-embed:${userId}`, 30, 60_000);
+      if (!embedLimit.allowed) {
+        return NextResponse.json(
+          { error: 'Too many requests', embedding: [] },
+          {
+            status: 429,
+            headers: { 'Retry-After': String(Math.ceil((embedLimit.resetAt - Date.now()) / 1000)) },
+          }
+        );
+      }
       if (!process.env.GEMINI_API_KEY) {
         return NextResponse.json({ embedding: [] });
       }
@@ -41,6 +61,62 @@ export async function POST(req: Request) {
     }
 
     // 2. وضع الدردشة مع المكتبة (RAG Q&A)
+    // SECURITY (2026-11-24 audit, high): this mode used to call Gemini
+    // with no credit check at all, so any signed-in user could burn the
+    // Gemini key for free. It now uses the same server-side credit
+    // check/deduct as /api/analyze, and is rate limited to 10/min.
+    const chatLimit = checkRateLimit(`ask-chat:${userId}`, 10, 60_000);
+    if (!chatLimit.allowed) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(Math.ceil((chatLimit.resetAt - Date.now()) / 1000)) },
+        }
+      );
+    }
+
+    let admin;
+    try {
+      admin = createSupabaseAdminClient();
+    } catch {
+      return NextResponse.json({ error: 'Service is not configured' }, { status: 503 });
+    }
+
+    let { data: profile, error: profileError } = await admin
+      .from('user_profiles')
+      .select('credits, plan_type')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error('Failed to load user profile:', profileError.message);
+      return NextResponse.json({ error: 'Could not load user profile' }, { status: 500 });
+    }
+
+    if (!profile) {
+      const { data: newProfile, error: insertError } = await admin
+        .from('user_profiles')
+        .insert({ user_id: userId, credits: 5, plan_type: 'free' })
+        .select('credits, plan_type')
+        .single();
+      if (insertError || !newProfile) {
+        console.error('Failed to create user profile:', insertError?.message);
+        return NextResponse.json({ error: 'Could not create user profile' }, { status: 500 });
+      }
+      profile = newProfile;
+    }
+
+    const isPro = profile?.plan_type === 'pro';
+    const currentCredits = profile?.credits ?? 0;
+
+    if (!isPro && currentCredits <= 0) {
+      return NextResponse.json(
+        { error: 'OUT_OF_CREDITS', remainingCredits: 0 },
+        { status: 402 }
+      );
+    }
+
     const targetLanguage =
       lang === 'ar' ? 'Arabic' : lang === 'tr' ? 'Turkish' : 'English';
 
@@ -65,11 +141,28 @@ export async function POST(req: Request) {
     `;
 
     // Use the current Gemini Flash models for library questions.
+    // Deduct only after a successful AI answer (same rule as analyze):
+    // the local keyword fallback below is free and deducts nothing.
     if (process.env.GEMINI_API_KEY) {
       try {
         const aiResponse = await generateContentWithFallback(ai, { contents: prompt });
         if (aiResponse.text) {
-          return NextResponse.json({ answer: aiResponse.text });
+          let remainingCredits = currentCredits;
+          if (!isPro) {
+            const newCredits = await deductCredit(admin, userId, currentCredits);
+            if (newCredits === null) {
+              return NextResponse.json(
+                { error: 'OUT_OF_CREDITS', remainingCredits: 0 },
+                { status: 402 }
+              );
+            }
+            remainingCredits = newCredits;
+          }
+          return NextResponse.json({
+            answer: aiResponse.text,
+            remainingCredits,
+            planType: profile?.plan_type || 'free',
+          });
         }
       } catch (error) {
         console.warn('All Gemini models failed for library question:', error);

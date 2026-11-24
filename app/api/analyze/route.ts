@@ -7,6 +7,7 @@ import { fetchPublicUrl } from '@/lib/safe-fetch';
 import { generateContentWithFallback } from '@/lib/gemini';
 import { getAuthenticatedUserId } from '@/lib/auth';
 import { deductCredit } from '@/lib/credits';
+import { checkRateLimit, pruneRateLimitBuckets } from '@/lib/rate-limit';
 
 // رفع المهلة القصوى للسيرفر في Vercel لتجنب خطأ 504 Timeout
 export const maxDuration = 60;
@@ -25,6 +26,14 @@ function extractYouTubeId(url: string): string | null {
 // فك اختصار روابط تيك توك القصيرة بمهلة 3 ثوانٍ كحد أقصى.
 // يقتصر على نطاقي vm.tiktok.com و vt.tiktok.com، ويُقبل الرابط النهائي فقط
 // إذا كان ما يزال على نطاق tiktok.com — حتى لا يتحول فك الاختصار إلى SSRF.
+//
+// SECURITY (2026-11-24 audit): the old version used fetch() with
+// redirect: 'follow' and only checked the destination AFTER the request
+// had already been made. Redirects are now followed MANUALLY, one hop at
+// a time: each Location is validated (must stay on *.tiktok.com) BEFORE
+// the next request is made, at most 3 hops, and the response body is never
+// read — only the final URL is returned. The actual page fetch afterwards
+// still goes through fetchPublicUrl.
 async function resolveShortUrl(url: string): Promise<string> {
   let host = '';
   try {
@@ -33,24 +42,47 @@ async function resolveShortUrl(url: string): Promise<string> {
     return url;
   }
   if (host !== 'vm.tiktok.com' && host !== 'vt.tiktok.com') return url;
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: AbortSignal.timeout(3000),
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-      },
-    });
-    const finalHost = new URL(res.url || url).hostname.toLowerCase();
-    if (finalHost === 'tiktok.com' || finalHost.endsWith('.tiktok.com')) {
-      return res.url || url;
+  let current = url;
+  for (let hop = 0; hop < 3; hop++) {
+    let res: Response;
+    try {
+      res = await fetch(current, {
+        method: 'GET',
+        // Manual redirects: validate each hop before following it.
+        redirect: 'manual',
+        signal: AbortSignal.timeout(3000),
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+        },
+      });
+    } catch {
+      return url;
     }
-    return url;
-  } catch {
-    return url;
+    const location = res.headers.get('location');
+    const isRedirect = [301, 302, 303, 307, 308].includes(res.status);
+    if (!isRedirect || !location) {
+      // Not a redirect: `current` is the final URL. Discard the body.
+      try {
+        await res.body?.cancel();
+      } catch {
+        // Body already consumed or unavailable; nothing to do.
+      }
+      return current;
+    }
+    let next: URL;
+    try {
+      next = new URL(location, current);
+    } catch {
+      return url;
+    }
+    const nextHost = next.hostname.toLowerCase();
+    if (nextHost !== 'tiktok.com' && !nextHost.endsWith('.tiktok.com')) {
+      return url;
+    }
+    current = next.toString();
   }
+  return current;
 }
 
 export async function POST(req: Request) {
@@ -60,6 +92,21 @@ export async function POST(req: Request) {
     const userId = await getAuthenticatedUserId(req);
     if (!userId) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
+
+    // SECURITY (2026-11-24 audit): 10 analyses per minute per user, so one
+    // account cannot burn the Gemini quota. See lib/rate-limit.ts for the
+    // in-memory limitation note (needs Upstash/Redis for a global limit).
+    pruneRateLimitBuckets();
+    const analyzeLimit = checkRateLimit(`analyze:${userId}`, 10, 60_000);
+    if (!analyzeLimit.allowed) {
+      return NextResponse.json(
+        { error: 'Too many requests' },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(Math.ceil((analyzeLimit.resetAt - Date.now()) / 1000)) },
+        }
+      );
     }
 
     const body = await req.json();
@@ -410,10 +457,10 @@ URL: ${finalUrl}`;
       planType: profile?.plan_type || 'free',
     });
   } catch (err: any) {
+    // SECURITY (2026-11-24 audit): never return the raw error message to
+    // the visitor — it can leak SQL text, table/column names, file paths
+    // or stack traces. Details stay in the server log only.
     console.error('Analyze Error:', err);
-    return NextResponse.json(
-      { error: err?.message || 'Failed to analyze content' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to analyze content' }, { status: 500 });
   }
 }
