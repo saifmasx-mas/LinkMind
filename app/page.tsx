@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { translations, Language } from '@/lib/translations';
-import { supabase } from '@/lib/supabase';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { User } from '@supabase/supabase-js';
 import OrbitalHub, { SourceFilter } from '@/components/OrbitalHub';
+import PricingModal from '@/components/PricingModal';
 import {
   Plus,
   Search,
@@ -77,15 +78,62 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
 
   // تتبع الخطوات المنجزة لكل بطاقة ونسخ Notion
-  const [completedSteps, setCompletedSteps] = useState<Record<string, boolean>>({});
+  // I10: completed steps survive a page refresh (localStorage).
+  const [completedSteps, setCompletedSteps] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = window.localStorage.getItem('linkmind-completed-steps');
+      return saved ? (JSON.parse(saved) as Record<string, boolean>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [notice, setNotice] = useState('');
+  const [telegramLinking, setTelegramLinking] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  // التصميم (2026-11-24): حالة تسجيل الدخول + تأكيد الحذف + مرجع حقل الرابط.
+  const [authBusy, setAuthBusy] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const urlInputRef = useRef<HTMLInputElement>(null);
 
   const [askQuery, setAskQuery] = useState('');
   const [aiAnswer, setAiAnswer] = useState('');
   const [asking, setAsking] = useState(false);
 
   const t = translations[lang];
-  const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME || 'saifmas_bot';
+  // I2: no hardcoded bot name. When the variable is missing the Telegram
+  // button is hidden instead of linking to somebody else's bot.
+  const botUsername = process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME;
+
+  // SECURITY (2026-11-24 audit): Supabase's raw messages distinguish
+  // "user not found" from "wrong password" (and "email already
+  // registered"), which lets anyone probe whether an email has an
+  // account. Show one generic message for every auth failure; the
+  // technical detail stays in the console only.
+  const genericAuthError = (): string =>
+    lang === 'ar'
+      ? 'تعذر تسجيل الدخول. تحقق من بريدك الإلكتروني وكلمة المرور وحاول مجدداً.'
+      : lang === 'tr'
+      ? 'Giriş yapılamadı. E-posta adresinizi ve şifrenizi kontrol edip tekrar deneyin.'
+      : 'Could not sign in. Check your email and password and try again.';
+
+  const genericSaveError = (): string =>
+    lang === 'ar'
+      ? 'تعذر الحفظ حالياً. حاول لاحقاً.'
+      : lang === 'tr'
+      ? 'Şu anda kaydedilemedi. Daha sonra tekrar deneyin.'
+      : 'Could not save right now. Please try again later.';
+
+  // Authorization header for the authenticated API routes (C1).
+  const authHeaders = async (): Promise<Record<string, string>> => {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    return session
+      ? { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }
+      : { 'Content-Type': 'application/json' };
+  };
 
   // التعرف التلقائي على مصدر الرابط أو الكتاب المرفوع لأيقونات المجرة
   const detectSource = (url: string): SourceFilter => {
@@ -108,8 +156,7 @@ export default function Home() {
       return 'word';
     if (u.includes('facebook.com') || u.includes('fb.watch') || u.includes('fb.com'))
       return 'facebook';
-    if (u.includes('google.com') || u.includes('goo.gl') || u.includes('medium.com'))
-      return 'google';
+    if (u.includes('google.com') || u.includes('goo.gl')) return 'google';
     if (u.includes('instagram.com')) return 'instagram';
     if (u.includes('tiktok.com')) return 'tiktok';
     if (u.includes('linkedin.com')) return 'linkedin';
@@ -145,6 +192,13 @@ export default function Home() {
     return () => subscription.unsubscribe();
   }, []);
 
+  // التصميم (2026-11-24): حدّث لغة الصفحة واتجاهها عند تبديل اللغة،
+  // حتى يقرأ قارئ الشاشة والمتصفح الاتجاه الصحيح.
+  useEffect(() => {
+    document.documentElement.lang = lang;
+    document.documentElement.dir = t.dir;
+  }, [lang, t.dir]);
+
   useEffect(() => {
     if (user) {
       fetchBookmarks();
@@ -153,6 +207,14 @@ export default function Home() {
       setBookmarks([]);
     }
   }, [user]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('linkmind-completed-steps', JSON.stringify(completedSteps));
+    } catch {
+      // Storage full or unavailable: checklist state just stays in memory.
+    }
+  }, [completedSteps]);
 
   const fetchUserProfile = async () => {
     if (!user) return;
@@ -168,22 +230,40 @@ export default function Home() {
     }
   };
 
+  // C8: one corrupt checklist/embedding row used to throw inside .map()
+  // and wipe the whole library. Parse defensively, one row at a time.
+  const safeJsonArray = (value: unknown): number[] | string[] => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+
   const fetchBookmarks = async () => {
+    if (!user) return;
+    // C3: ask only for this user's rows (RLS is the second line of defence,
+    // not the only one).
     const { data, error } = await supabase
       .from('bookmarks')
-      .select('*')
+      // SECURITY (2026-11-24 audit): select only the columns the UI uses
+      // instead of '*', so a future private column can never leak to the
+      // browser. `embedding` is still needed for local semantic search.
+      .select('id, url, title, summary, category, image_url, checklist, embedding, created_at')
+      .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
     if (!error && data) {
       const formatted = data.map((item) => ({
         ...item,
-        checklist: Array.isArray(item.checklist)
-          ? item.checklist
-          : typeof item.checklist === 'string'
-          ? JSON.parse(item.checklist)
-          : [],
-        embedding: typeof item.embedding === 'string' ? JSON.parse(item.embedding) : item.embedding,
-        created_at: new Date(item.created_at).toLocaleDateString(),
+        checklist: safeJsonArray(item.checklist) as string[],
+        embedding: safeJsonArray(item.embedding) as number[],
+        created_at: new Date(item.created_at).toLocaleString(),
       }));
       setBookmarks(formatted);
     }
@@ -193,25 +273,100 @@ export default function Home() {
     setAuthError('');
     if (!email || !password) return;
 
+    // التصميم (2026-11-24): نص واضح أثناء تسجيل الدخول بدل دوّارة صامتة.
+    setAuthBusy(true);
     const { error } = isSignUp
-      ? await supabase.auth.signUp({ email, password })
+      ? await supabase.auth.signUp({
+          email,
+          password,
+          // I4: email confirmation must land on the dedicated callback page.
+          options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+        })
       : await supabase.auth.signInWithPassword({ email, password });
 
+    setAuthBusy(false);
     if (error) {
-      setAuthError(error.message);
+      console.error('Auth failed:', error.message);
+      setAuthError(genericAuthError());
     }
   };
 
   const handleGoogleLogin = async () => {
     setAuthError('');
+    setAuthBusy(true);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.origin,
+        // I4: the dedicated /auth/callback page exists for exactly this.
+        redirectTo: `${window.location.origin}/auth/callback`,
       },
     });
+    setAuthBusy(false);
     if (error) {
-      setAuthError(error.message);
+      console.error('Google sign-in failed:', error.message);
+      setAuthError(genericAuthError());
+    }
+  };
+
+  // C6: the reset-password page existed but nothing in the UI ever linked
+  // to it. This sends the reset email to /auth/reset-password.
+  const handleForgotPassword = async () => {
+    setAuthError('');
+    setResetSent(false);
+    if (!email) {
+      setAuthError(
+        lang === 'ar'
+          ? 'اكتب بريدك الإلكتروني أولاً ثم اضغط "نسيت كلمة المرور؟".'
+          : lang === 'tr'
+          ? 'Önce e-posta adresinizi girin, sonra "Şifrenizi mi unuttunuz?" bağlantısına dokunun.'
+          : 'Enter your email first, then tap "Forgot password?".'
+      );
+      return;
+    }
+    setResetBusy(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/auth/reset-password`,
+    });
+    setResetBusy(false);
+    if (error) {
+      console.error('Password reset failed:', error.message);
+      setAuthError(
+        lang === 'ar'
+          ? 'تعذر إرسال رسالة إعادة تعيين كلمة المرور. حاول لاحقاً.'
+          : lang === 'tr'
+          ? 'Şifre sıfırlama e-postası gönderilemedi. Daha sonra tekrar deneyin.'
+          : 'Could not send the password reset email. Please try again later.'
+      );
+    } else {
+      setResetSent(true);
+    }
+  };
+
+  // C5: the Telegram button used to open t.me/<bot>?start=<user.id>, which
+  // the webhook always rejects. It now asks the server for a one-time
+  // 43-character token and opens the link it returns.
+  const handleTelegramLink = async () => {
+    if (!user) {
+      setNotice(t.telegramSignInRequired);
+      return;
+    }
+    setTelegramLinking(true);
+    try {
+      const headers = await authHeaders();
+      const res = await fetch('/api/telegram/link', {
+        method: 'POST',
+        headers,
+      });
+      const data = await res.json();
+      if (res.ok && data.url) {
+        window.open(data.url, '_blank', 'noopener,noreferrer');
+      } else {
+        setNotice(t.telegramLinkFailed);
+      }
+    } catch {
+      setNotice(t.telegramLinkFailed);
+    } finally {
+      setTelegramLinking(false);
     }
   };
 
@@ -225,27 +380,45 @@ export default function Home() {
       return;
     }
 
+    // I11: cancel the previous embedding request when the query changes,
+    // instead of letting stale results overwrite newer ones.
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
+        const headers = await authHeaders();
         const res = await fetch('/api/ask', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
+          signal: controller.signal,
           body: JSON.stringify({ query: searchQuery, mode: 'embed' }),
         });
         if (res.ok) {
           const data = await res.json();
           setQueryEmbedding(data.embedding || []);
         }
-      } catch {}
+      } catch (err) {
+        if ((err as Error)?.name !== 'AbortError') {
+          // Embedding failure is non-fatal: text search still works.
+        }
+      }
     }, 500);
 
-    return () => clearTimeout(timer);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
   }, [searchQuery]);
 
   // إضافة رابط ويب أو يوتيوب أو تيك توك
   const handleAddBookmark = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!urlInput.trim() || !user) return;
+
+    // I5: refuse a link that is already in this user's library.
+    if (bookmarks.some((b) => b.url === urlInput.trim())) {
+      setNotice(t.duplicateLink);
+      return;
+    }
 
     if (planType !== 'pro' && credits <= 0) {
       setShowPricingModal(true);
@@ -254,13 +427,13 @@ export default function Home() {
 
     setLoading(true);
     try {
+      const headers = await authHeaders();
       const res = await fetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           url: urlInput.trim(),
           lang,
-          userId: user.id,
         }),
       });
 
@@ -271,9 +444,25 @@ export default function Home() {
 
       const data = await res.json();
 
+      if (res.status === 409 || data.error === 'DUPLICATE_LINK') {
+        setNotice(t.duplicateLink);
+        return;
+      }
+
       if (res.status === 402 || data.error === 'OUT_OF_CREDITS') {
         setCredits(0);
         setShowPricingModal(true);
+        return;
+      }
+
+      if (res.status === 503 || data.error === 'AI_UNAVAILABLE') {
+        setNotice(
+          lang === 'ar'
+            ? 'خدمة الذكاء الاصطناعي غير متاحة حالياً. حاول لاحقاً، ولم يُخصم أي رصيد.'
+            : lang === 'tr'
+            ? 'Yapay zeka hizmeti şu anda kullanılamıyor. Daha sonra tekrar deneyin, kredi düşülmedi.'
+            : 'The AI service is unavailable right now. Try again later; no credit was deducted.'
+        );
         return;
       }
 
@@ -293,17 +482,21 @@ export default function Home() {
           if (typeof data.remainingCredits === 'number') {
             setCredits(data.remainingCredits);
           }
+          // I7: the page/transcript could not be fetched, so the summary is
+          // based on the title alone — say so instead of failing silently.
+          if (data.contentWarning) setNotice(t.contentWarning);
           await fetchBookmarks();
           setUrlInput('');
         } else {
-          alert('Database error: ' + dbError.message);
+          console.error('Failed to save bookmark:', dbError.message);
+          setNotice(genericSaveError());
         }
       } else {
-        alert(data.error || (lang === 'ar' ? 'تأكد من صحة الرابط!' : 'Please enter a valid URL!'));
+        setNotice(data.error || (lang === 'ar' ? 'تأكد من صحة الرابط!' : 'Please enter a valid URL!'));
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : '';
-      alert((lang === 'ar' ? 'تعذر حفظ الرابط: ' : 'Error processing link: ') + errorMessage);
+      console.error('Failed to save bookmark:', err);
+      setNotice(genericSaveError());
     } finally {
       setLoading(false);
     }
@@ -339,7 +532,6 @@ export default function Home() {
       const cleanTitle = file.name.replace(/\.[^/.]+$/, '');
       let payload: any = {
         lang,
-        userId: user.id,
         bookTitle: cleanTitle,
       };
 
@@ -385,7 +577,7 @@ export default function Home() {
           payload.bookMimeType = 'application/pdf';
           payload.bookType = 'pdf';
         } else {
-          alert(
+          setNotice(
             lang === 'ar'
               ? 'هذا الكتاب مصوّر (Scan) وحجمه كبير (أكثر من 1.8MB). جرب كتاباً نصياً أو ملفاً أصغر حجماً.'
               : 'Scanned PDF is larger than 1.8MB. Please use a text-based or smaller PDF.'
@@ -398,7 +590,7 @@ export default function Home() {
         const result = await mammoth.extractRawText({ arrayBuffer });
         const text = (result.value || '').replace(/\s+/g, ' ').trim();
         if (!text) {
-          alert(lang === 'ar' ? 'ملف Word فارغ!' : 'Word document is empty!');
+          setNotice(lang === 'ar' ? 'ملف Word فارغ!' : 'Word document is empty!');
           return;
         }
         payload.bookText = text.slice(0, 14000);
@@ -406,16 +598,17 @@ export default function Home() {
       } else {
         const text = (await file.text()).replace(/\s+/g, ' ').trim();
         if (!text) {
-          alert(lang === 'ar' ? 'الملف النصي فارغ!' : 'Text file is empty!');
+          setNotice(lang === 'ar' ? 'الملف النصي فارغ!' : 'Text file is empty!');
           return;
         }
         payload.bookText = text.slice(0, 14000);
         payload.bookType = 'word';
       }
 
+      const headers = await authHeaders();
       const res = await fetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
       });
 
@@ -429,6 +622,17 @@ export default function Home() {
       if (res.status === 402 || data.error === 'OUT_OF_CREDITS') {
         setCredits(0);
         setShowPricingModal(true);
+        return;
+      }
+
+      if (res.status === 503 || data.error === 'AI_UNAVAILABLE') {
+        setNotice(
+          lang === 'ar'
+            ? 'خدمة الذكاء الاصطناعي غير متاحة حالياً. حاول لاحقاً، ولم يُخصم أي رصيد.'
+            : lang === 'tr'
+            ? 'Yapay zeka hizmeti şu anda kullanılamıyor. Daha sonra tekrar deneyin, kredi düşülmedi.'
+            : 'The AI service is unavailable right now. Try again later; no credit was deducted.'
+        );
         return;
       }
 
@@ -448,15 +652,18 @@ export default function Home() {
           if (typeof data.remainingCredits === 'number') {
             setCredits(data.remainingCredits);
           }
+          if (data.contentWarning) setNotice(t.contentWarning);
           await fetchBookmarks();
         } else {
-          alert('Database error: ' + dbError.message);
+          console.error('Failed to save book:', dbError.message);
+          setNotice(genericSaveError());
         }
       } else {
-        alert(data.error || (lang === 'ar' ? 'حدث خطأ أثناء تحليل الكتاب' : 'Failed to analyze book'));
+        setNotice(data.error || (lang === 'ar' ? 'حدث خطأ أثناء تحليل الكتاب' : 'Failed to analyze book'));
       }
     } catch (err: any) {
-      alert((lang === 'ar' ? 'تعذر قراءة الملف: ' : 'Error reading file: ') + (err?.message || ''));
+      console.error('Failed to read file:', err);
+      setNotice(genericSaveError());
     } finally {
       setLoading(false);
       e.target.value = '';
@@ -480,6 +687,16 @@ export default function Home() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  // C9: titles and summaries come from external pages and from the AI, so
+  // they must be escaped before being injected into the print window.
+  const escapeHtml = (value: string): string =>
+    value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
   const handleExportPDF = (item: Bookmark) => {
     const printWindow = window.open('', '_blank', 'width=800,height=900');
     if (!printWindow) return;
@@ -488,7 +705,7 @@ export default function Home() {
       .map(
         (step, idx) =>
           `<li style="margin-bottom: 12px; padding: 10px 14px; background: #faf5ff; border-radius: 8px; border-inline-start: 4px solid #9333ea;">
-            <strong style="color: #7e22ce;">${idx + 1}.</strong> ${step}
+            <strong style="color: #7e22ce;">${idx + 1}.</strong> ${escapeHtml(step)}
           </li>`
       )
       .join('');
@@ -496,7 +713,7 @@ export default function Home() {
     printWindow.document.write(`
       <html dir="${t.dir}">
         <head>
-          <title>${item.title} - LinkMind Checklist</title>
+          <title>${escapeHtml(item.title)} - LinkMind Checklist</title>
           <style>
             body { font-family: system-ui, -apple-system, sans-serif; padding: 40px; color: #1e1b4b; line-height: 1.6; }
             .badge { display: inline-block; background: linear-gradient(90deg, #7e22ce, #db2777); color: #fff; padding: 4px 14px; border-radius: 999px; font-size: 12px; font-weight: bold; }
@@ -507,13 +724,13 @@ export default function Home() {
           </style>
         </head>
         <body>
-          <span class="badge">${item.category}</span>
-          <h1>${item.title}</h1>
-          <div class="summary">${item.summary}</div>
+          <span class="badge">${escapeHtml(item.category)}</span>
+          <h1>${escapeHtml(item.title)}</h1>
+          <div class="summary">${escapeHtml(item.summary)}</div>
           <h3>${lang === 'ar' ? 'خطوات التنفيذ والأفكار الرئيسية:' : 'Actionable Checklist & Key Ideas:'}</h3>
           <ul>${stepsHtml}</ul>
           <div class="footer">
-            Source: ${item.url} <br/>
+            Source: ${escapeHtml(item.url)} <br/>
             Generated by LinkMind AI
           </div>
           <script>window.onload = () => { window.print(); }</script>
@@ -530,9 +747,10 @@ export default function Home() {
     setAsking(true);
     setAiAnswer('');
     try {
+      const headers = await authHeaders();
       const res = await fetch('/api/ask', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           query: askQuery,
           bookmarks,
@@ -543,6 +761,14 @@ export default function Home() {
       const data = await res.json();
       if (res.ok) {
         setAiAnswer(data.answer);
+        // /api/ask now deducts a credit for AI answers; keep the header
+        // balance in sync. The local fallback answer deducts nothing.
+        if (typeof data.remainingCredits === 'number') {
+          setCredits(data.remainingCredits);
+        }
+      } else if (res.status === 402 || data.error === 'OUT_OF_CREDITS') {
+        setCredits(0);
+        setShowPricingModal(true);
       }
     } catch {
       setAiAnswer('حدث خطأ أثناء استشارة الذاكرة.');
@@ -552,7 +778,13 @@ export default function Home() {
   };
 
   const handleDelete = async (id: string) => {
-    const { error } = await supabase.from('bookmarks').delete().eq('id', id);
+    if (!user) return;
+    // C3: never delete another user's row, even if RLS is misconfigured.
+    const { error } = await supabase
+      .from('bookmarks')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user.id);
     if (!error) {
       setBookmarks(bookmarks.filter((b) => b.id !== id));
     }
@@ -616,7 +848,7 @@ export default function Home() {
             {user && (
               <button
                 onClick={() => setShowPricingModal(true)}
-                className={`flex items-center gap-1.5 text-xs font-bold px-3.5 py-2 rounded-xl border transition cursor-pointer shadow-md ${
+                className={`flex items-center gap-1.5 text-xs font-bold px-3.5 py-2 min-h-9 rounded-xl border transition cursor-pointer shadow-md ${
                   planType === 'pro'
                     ? 'bg-gradient-to-r from-amber-500/25 to-yellow-500/20 text-amber-300 border-amber-400/50 shadow-amber-500/10'
                     : credits > 0
@@ -627,7 +859,7 @@ export default function Home() {
                 {planType === 'pro' ? (
                   <>
                     <Crown className="w-4 h-4 text-amber-400" />
-                    <span>PRO ∞</span>
+                    <span>{t.proBadge}</span>
                   </>
                 ) : (
                   <>
@@ -651,7 +883,7 @@ export default function Home() {
                 <button
                   key={l}
                   onClick={() => setLang(l)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold uppercase transition cursor-pointer ${
+                  className={`px-2.5 py-1 min-h-9 min-w-9 rounded-lg text-xs font-bold uppercase transition cursor-pointer ${
                     lang === l
                       ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-[0_0_12px_rgba(192,38,211,0.5)]'
                       : 'text-purple-200/70 hover:text-white'
@@ -662,21 +894,22 @@ export default function Home() {
               ))}
             </div>
 
-            {user && (
+            {user && botUsername && (
               <>
-                <a
-                  href={`https://t.me/${botUsername}?start=${user.id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 text-xs font-semibold bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 text-amber-200 border border-purple-400/30 px-3.5 py-2 rounded-xl transition"
+                <button
+                  type="button"
+                  onClick={handleTelegramLink}
+                  disabled={telegramLinking}
+                  title={t.telegramBot}
+                  className="flex items-center gap-1.5 text-xs font-semibold bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 text-amber-200 border border-purple-400/30 px-3.5 py-2 min-h-9 rounded-xl transition disabled:opacity-60 cursor-pointer"
                 >
                   <Send className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Telegram</span>
-                </a>
+                  <span>{telegramLinking ? t.telegramConnecting : 'Telegram'}</span>
+                </button>
 
                 <button
                   onClick={handleLogout}
-                  className="flex items-center gap-1.5 text-xs font-medium bg-[#160b2e]/80 hover:bg-fuchsia-950/70 text-purple-200 hover:text-fuchsia-200 border border-purple-500/25 px-3 py-2 rounded-xl transition cursor-pointer"
+                  className="flex items-center gap-1.5 text-xs font-medium bg-[#160b2e]/80 hover:bg-fuchsia-950/70 text-purple-200 hover:text-fuchsia-200 border border-purple-500/25 px-3 py-2 min-h-9 rounded-xl transition cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                   <span>{t.logoutBtn}</span>
@@ -704,10 +937,22 @@ export default function Home() {
                   <Lock className="w-7 h-7 text-amber-400" />
                 </div>
               </div>
-              <h2 className="text-2xl font-extrabold text-center text-white mb-2">
+              <h1 className="text-2xl font-extrabold text-center text-white mb-2">
                 {t.loginTitle}
-              </h2>
-              <p className="text-sm text-center text-purple-200/75 mb-6">{t.tagline}</p>
+              </h1>
+              <p className="text-sm text-center text-purple-200/85 mb-6">{t.tagline}</p>
+
+              {/* N11: say plainly when Supabase is not configured instead of
+                  showing cryptic network errors on every action. */}
+              {!isSupabaseConfigured && (
+                <div className="mb-4 p-3 rounded-xl bg-amber-500/15 border border-amber-400/40 text-xs text-amber-200 text-center">
+                  {lang === 'ar'
+                    ? 'Supabase غير مضبوط: أضف NEXT_PUBLIC_SUPABASE_URL و NEXT_PUBLIC_SUPABASE_ANON_KEY إلى متغيرات البيئة.'
+                    : lang === 'tr'
+                    ? 'Supabase yapılandırılmamış: NEXT_PUBLIC_SUPABASE_URL ve NEXT_PUBLIC_SUPABASE_ANON_KEY ortam değişkenlerini ekleyin.'
+                    : 'Supabase is not configured: set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in the environment variables.'}
+                </div>
+              )}
 
               {authError && (
                 <div className="mb-4 p-3 rounded-xl bg-fuchsia-500/15 border border-fuchsia-500/40 text-xs text-fuchsia-200 text-center">
@@ -716,31 +961,57 @@ export default function Home() {
               )}
 
               <div className="space-y-4">
+                <label htmlFor="login-email" className="sr-only">
+                  {t.emailPlaceholder}
+                </label>
                 <input
+                  id="login-email"
                   type="email"
+                  autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder={t.emailPlaceholder}
-                  className="w-full bg-[#090514] border border-purple-500/30 rounded-xl px-4 py-3 text-sm text-white placeholder-purple-300/40 focus:outline-none focus:border-amber-400 transition"
+                  className="w-full bg-[#090514] border border-purple-500/30 rounded-xl px-4 py-3 text-sm text-white placeholder-purple-300/65 focus:outline-none focus:border-amber-400 transition"
                 />
+                <label htmlFor="login-password" className="sr-only">
+                  {t.passwordPlaceholder}
+                </label>
                 <input
+                  id="login-password"
                   type="password"
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={t.passwordPlaceholder}
-                  className="w-full bg-[#090514] border border-purple-500/30 rounded-xl px-4 py-3 text-sm text-white placeholder-purple-300/40 focus:outline-none focus:border-amber-400 transition"
+                  className="w-full bg-[#090514] border border-purple-500/30 rounded-xl px-4 py-3 text-sm text-white placeholder-purple-300/65 focus:outline-none focus:border-amber-400 transition"
                 />
+
+                <div className="flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    disabled={resetBusy}
+                    className="text-xs text-amber-300/90 hover:text-amber-200 underline underline-offset-2 disabled:opacity-60 cursor-pointer"
+                  >
+                    {t.forgotPassword}
+                  </button>
+                  {resetSent && (
+                    <span className="text-xs text-emerald-300">{t.resetEmailSent}</span>
+                  )}
+                </div>
 
                 <div className="flex flex-col gap-2.5 pt-2">
                   <button
                     onClick={() => handleAuth(false)}
-                    className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-[#180a2e] font-extrabold py-3 rounded-xl transition cursor-pointer shadow-[0_0_20px_rgba(251,191,36,0.35)]"
+                    disabled={authBusy}
+                    className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-[#180a2e] font-extrabold py-3 rounded-xl transition cursor-pointer shadow-[0_0_20px_rgba(251,191,36,0.35)] disabled:opacity-60"
                   >
-                    {t.loginBtn}
+                    {authBusy ? t.signingIn : t.loginBtn}
                   </button>
                   <button
                     onClick={() => handleAuth(true)}
-                    className="w-full bg-purple-900/50 hover:bg-purple-800/60 text-purple-100 border border-purple-500/30 font-semibold py-3 rounded-xl transition cursor-pointer"
+                    disabled={authBusy}
+                    className="w-full bg-purple-900/50 hover:bg-purple-800/60 text-purple-100 border border-purple-500/30 font-semibold py-3 rounded-xl transition cursor-pointer disabled:opacity-60"
                   >
                     {t.signupBtn}
                   </button>
@@ -748,7 +1019,7 @@ export default function Home() {
 
                 <div className="relative my-3 flex items-center justify-center">
                   <span className="border-t border-purple-500/20 w-full"></span>
-                  <span className="bg-[#120926] px-3 text-xs text-amber-300/80 font-bold">OR</span>
+                  <span className="bg-[#120926] px-3 text-xs text-amber-300/80 font-bold">{t.orDivider}</span>
                   <span className="border-t border-purple-500/20 w-full"></span>
                 </div>
 
@@ -783,38 +1054,43 @@ export default function Home() {
         ) : (
           /* لوحة التحكم السحابية */
           <main className="max-w-6xl mx-auto px-4 py-8">
-            {/* المجرة المدارية التفاعلية في أعلى ومنتصف الصفحة */}
+            {/* التصميم (2026-11-24): على الهاتف يظهر العنوان ثم نموذج
+                الإضافة فوق المجرة، حتى لا يُدفع زر الحفظ تحت الشاشة. */}
+            <div className="flex flex-col">
+            <div className="order-3 sm:order-1">
             <OrbitalHub
               selectedSource={selectedSource}
               onSelectSource={setSelectedSource}
               counts={sourceCounts}
               lang={lang}
             />
+            </div>
 
-            <div className="text-center max-w-2xl mx-auto mb-8">
+            <div className="order-1 sm:order-2 text-center max-w-2xl mx-auto mb-8">
               <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-purple-900/40 border border-amber-400/30 text-amber-300 text-xs font-bold mb-3 shadow-[0_0_15px_rgba(251,191,36,0.15)]">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>AI Tutorial & Book-to-Checklist Engine</span>
+                <span>{t.engineBadge}</span>
               </div>
               <h1 className="text-3xl sm:text-4xl font-extrabold mb-3 text-white drop-shadow-[0_2px_15px_rgba(168,85,247,0.35)]">
                 {t.tagline}
               </h1>
               <div className="h-0.5 w-40 mx-auto bg-gradient-to-r from-transparent via-amber-400 to-transparent mb-2" />
-              <p className="text-xs text-purple-300/60">{user.email}</p>
+              <p className="text-xs text-purple-300/80">{user.email}</p>
             </div>
 
             {/* شريط إضافة رابط أو رفع كتاب PDF / Word */}
             <form
               onSubmit={handleAddBookmark}
-              className="max-w-3xl mx-auto mb-6 flex flex-col sm:flex-row gap-2.5 bg-[#120926]/80 backdrop-blur-xl p-2.5 rounded-2xl border border-purple-500/30 shadow-[0_0_35px_rgba(126,34,206,0.2)]"
+              className="order-2 sm:order-3 max-w-3xl mx-auto mb-6 flex flex-col sm:flex-row gap-2.5 bg-[#120926]/80 backdrop-blur-xl p-2.5 rounded-2xl border border-purple-500/30 shadow-[0_0_35px_rgba(126,34,206,0.2)]"
             >
               <input
+                ref={urlInputRef}
                 type="url"
                 required
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
                 placeholder={t.placeholder}
-                className="flex-1 bg-[#080412] border border-purple-500/25 rounded-xl px-4 py-3 text-white placeholder-purple-300/40 focus:outline-none focus:border-amber-400 transition"
+                className="flex-1 bg-[#080412] border border-purple-500/25 rounded-xl px-4 py-3 text-white placeholder-purple-300/65 focus:outline-none focus:border-amber-400 transition"
               />
 
               {/* زر رفع كتاب PDF أو Word */}
@@ -856,6 +1132,33 @@ export default function Home() {
                 <span>{loading ? t.savingBtn : t.saveBtn}</span>
               </button>
             </form>
+            </div>
+
+            {/* التصميم (2026-11-24): مؤشر تقدم أثناء التحليل الطويل،
+                بدل أيقونة دوّارة بلا نص. */}
+            {loading && (
+              <div role="status" className="max-w-3xl mx-auto mb-6">
+                <div className="h-2 rounded-full bg-purple-900/60 overflow-hidden">
+                  <div className="h-full w-1/2 rounded-full bg-gradient-to-r from-amber-400 to-yellow-400 animate-pulse" />
+                </div>
+                <p className="text-xs text-purple-200/85 text-center mt-2">{t.savingBtn}</p>
+              </div>
+            )}
+
+            {/* تنبيه عند فشل جلب محتوى الرابط: الملخص مبني على العنوان فقط */}
+            {notice && (
+              <div className="max-w-3xl mx-auto mb-6 p-3 rounded-xl bg-amber-500/10 border border-amber-400/40 text-xs text-amber-200 flex items-start justify-between gap-3">
+                <span>{notice}</span>
+                <button
+                  type="button"
+                  onClick={() => setNotice('')}
+                  aria-label={lang === 'ar' ? 'إغلاق التنبيه' : lang === 'tr' ? 'Uyarıyı kapat' : 'Dismiss notice'}
+                  className="min-w-11 min-h-11 flex items-center justify-center text-amber-300/70 hover:text-white shrink-0 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
             {/* صندوق اسأل ذاكرتك */}
             {bookmarks.length > 0 && (
@@ -868,7 +1171,7 @@ export default function Home() {
                       value={askQuery}
                       onChange={(e) => setAskQuery(e.target.value)}
                       placeholder={t.askPlaceholder}
-                      className="w-full bg-[#080412]/90 border border-purple-500/30 rounded-xl ps-10 pe-4 py-2.5 text-sm text-white placeholder-purple-300/45 focus:outline-none focus:border-fuchsia-400"
+                      className="w-full bg-[#080412]/90 border border-purple-500/30 rounded-xl ps-10 pe-4 py-2.5 text-sm text-white placeholder-purple-300/65 focus:outline-none focus:border-fuchsia-400"
                     />
                   </div>
                   <button
@@ -882,10 +1185,11 @@ export default function Home() {
                 </form>
 
                 {aiAnswer && (
-                  <div className="mt-4 p-4 bg-[#090514]/95 rounded-xl border border-amber-400/30 relative">
+                  <div className="mt-4 pt-4 border-t border-fuchsia-500/20 relative">
                     <button
                       onClick={() => setAiAnswer('')}
-                      className="absolute top-3 end-3 text-purple-300/60 hover:text-white cursor-pointer"
+                      aria-label={lang === 'ar' ? 'إغلاق الإجابة' : lang === 'tr' ? 'Yanıtı kapat' : 'Dismiss answer'}
+                      className="absolute top-3 end-3 min-w-11 min-h-11 flex items-center justify-center text-purple-300/60 hover:text-white cursor-pointer"
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -907,7 +1211,7 @@ export default function Home() {
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder={t.searchPlaceholder}
-                  className="w-full bg-[#080412] border border-purple-500/25 rounded-xl ps-10 pe-4 py-2 text-sm text-white placeholder-purple-300/40 focus:outline-none focus:border-amber-400"
+                  className="w-full bg-[#080412] border border-purple-500/25 rounded-xl ps-10 pe-4 py-2 text-sm text-white placeholder-purple-300/65 focus:outline-none focus:border-amber-400"
                 />
               </div>
 
@@ -916,7 +1220,7 @@ export default function Home() {
                   <button
                     key={key}
                     onClick={() => setSelectedCategory(key)}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                    className={`px-3.5 py-1.5 min-h-9 rounded-xl text-xs font-bold transition cursor-pointer ${
                       selectedCategory === key
                         ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-[0_0_15px_rgba(192,38,211,0.4)]'
                         : 'bg-[#1a0e36] text-purple-200/80 hover:text-white border border-purple-500/20'
@@ -930,8 +1234,15 @@ export default function Home() {
 
             {/* شبكة البطاقات */}
             {filteredBookmarks.length === 0 ? (
-              <div className="text-center py-20 border border-dashed border-purple-500/30 bg-[#120926]/40 rounded-3xl text-purple-300/60">
-                {t.emptyState}
+              <div className="text-center py-20 px-4 border border-dashed border-purple-500/30 bg-[#120926]/40 rounded-3xl">
+                <p className="text-purple-300/80 mb-5">{t.emptyState}</p>
+                <button
+                  type="button"
+                  onClick={() => urlInputRef.current?.focus()}
+                  className="bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 text-[#180a2e] font-extrabold px-6 py-3 min-h-11 rounded-xl cursor-pointer shadow-[0_0_20px_rgba(251,191,36,0.35)]"
+                >
+                  {t.emptyStateBtn}
+                </button>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -959,12 +1270,12 @@ export default function Home() {
                               {t.categories[item.category as keyof typeof t.categories] ||
                                 item.category}
                             </span>
-                            <span className="text-xs text-purple-300/50">{item.created_at}</span>
+                            <span className="text-xs text-purple-300/80">{item.created_at}</span>
                           </div>
-                          <h3 className="font-bold text-lg text-white mb-2 line-clamp-2 group-hover:text-amber-200 transition">
+                          <h2 className="font-bold text-lg text-white mb-2 line-clamp-2 group-hover:text-amber-200 transition">
                             {item.title}
-                          </h3>
-                          <p className="text-sm text-purple-200/75 leading-relaxed mb-4">
+                          </h2>
+                          <p className="text-sm text-purple-200/85 leading-relaxed mb-4 line-clamp-4">
                             {item.summary}
                           </p>
 
@@ -991,7 +1302,16 @@ export default function Home() {
                                   return (
                                     <li
                                       key={idx}
+                                      role="button"
+                                      tabIndex={0}
+                                      aria-pressed={isDone}
                                       onClick={() => toggleStep(item.id, idx)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                          e.preventDefault();
+                                          toggleStep(item.id, idx);
+                                        }
+                                      }}
                                       className={`flex items-start gap-2 text-xs p-2.5 rounded-xl cursor-pointer transition border ${
                                         isDone
                                           ? 'bg-emerald-950/30 border-emerald-500/20 text-purple-300/40 line-through'
@@ -1038,7 +1358,7 @@ export default function Home() {
                               <button
                                 onClick={() => handleCopyNotion(item)}
                                 title="Copy Markdown for Notion"
-                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2.5 py-1 rounded-lg flex items-center gap-1 transition cursor-pointer"
+                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2.5 py-1 min-h-9 rounded-lg flex items-center gap-1 transition cursor-pointer"
                               >
                                 {copiedId === item.id ? (
                                   <Check className="w-3 h-3 text-emerald-400" />
@@ -1051,7 +1371,7 @@ export default function Home() {
                               <button
                                 onClick={() => handleExportPDF(item)}
                                 title="Export as PDF"
-                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2.5 py-1 rounded-lg flex items-center gap-1 transition cursor-pointer"
+                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2.5 py-1 min-h-9 rounded-lg flex items-center gap-1 transition cursor-pointer"
                               >
                                 <FileText className="w-3 h-3 text-amber-400" />
                                 <span>PDF</span>
@@ -1061,8 +1381,10 @@ export default function Home() {
                         </div>
 
                         <button
-                          onClick={() => handleDelete(item.id)}
-                          className="text-xs text-fuchsia-400/80 hover:text-fuchsia-300 flex items-center gap-1 cursor-pointer"
+                          onClick={() => setPendingDeleteId(item.id)}
+                          aria-label={`${t.deleteBtn}: ${item.title}`}
+                          title={t.deleteBtn}
+                          className="min-w-11 min-h-11 px-2 text-xs text-fuchsia-400/80 hover:text-fuchsia-300 flex items-center justify-center gap-1 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -1076,109 +1398,48 @@ export default function Home() {
         )}
       </div>
 
-      {/* نافذة الباقات والرصيد */}
-      {showPricingModal && (
-        <div className="fixed inset-0 z-50 bg-[#05020d]/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-gradient-to-b from-[#1a0d38] to-[#0d061f] border border-amber-400/40 rounded-3xl max-w-2xl w-full p-6 sm:p-8 relative shadow-[0_0_60px_rgba(168,85,247,0.35)]">
-            <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-purple-500 via-amber-400 to-fuchsia-500 rounded-t-3xl" />
-
-            <button
-              onClick={() => setShowPricingModal(false)}
-              className="absolute top-4 end-4 text-purple-300 hover:text-white cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="text-center mb-6">
-              <h2 className="text-2xl font-extrabold text-white mb-2">
-                {lang === 'ar'
-                  ? 'اشحن رصيدك وحوّل الشروحات والكتب إلى خطوات عملية'
-                  : 'Upgrade Your Learning Workflow'}
-              </h2>
-              <p className="text-sm text-amber-300/90 font-medium">
-                {lang === 'ar'
-                  ? `رصيدك الحالي: ${planType === 'pro' ? 'غير محدود (PRO)' : `${credits} شروحات`}`
-                  : `Current balance: ${planType === 'pro' ? 'Unlimited (PRO)' : `${credits} credits`}`}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* باقة الطلاب */}
-              <div className="bg-[#090514]/90 border border-purple-500/30 rounded-2xl p-6 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs font-bold uppercase px-3 py-1 rounded-full bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30">
-                      {lang === 'ar' ? 'باقة الطلاب' : 'Student Pack'}
-                    </span>
-                    <Zap className="w-5 h-5 text-fuchsia-400" />
-                  </div>
-                  <div className="text-3xl font-extrabold text-white mb-1">
-                    $5 <span className="text-xs font-normal text-purple-300/70">/ 50 شرحاً</span>
-                  </div>
-                  <p className="text-xs text-purple-200/70 mb-4">
-                    {lang === 'ar'
-                      ? 'ادفع عند الحاجة — رصيد لا تنتهي صلاحيته أبداً'
-                      : 'Pay-As-You-Go — Credits never expire'}
-                  </p>
-                  <ul className="space-y-2 text-xs text-purple-100/90 mb-6">
-                    <li>✓ تحويل 50 فيديو يوتيوب أو كتاب PDF إلى خطوات</li>
-                    <li>✓ تصدير مباشر إلى Notion و PDF</li>
-                    <li>✓ بدون التزام باشتراك شهري</li>
-                  </ul>
-                </div>
-                <button
-                  onClick={() =>
-                    alert(
-                      lang === 'ar'
-                        ? 'سيتم ربط بوابة الدفع قريباً! (50 شرحاً مقابل 5$)'
-                        : 'Payment gateway integration coming soon!'
-                    )
-                  }
-                  className="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white font-bold py-2.5 rounded-xl text-sm transition cursor-pointer shadow-[0_0_20px_rgba(192,38,211,0.3)]"
-                >
-                  {lang === 'ar' ? 'شراء 50 شرحاً ($5)' : 'Buy 50 Credits ($5)'}
-                </button>
-              </div>
-
-              {/* باقة صناع المحتوى والمدربين الذهبية */}
-              <div className="bg-gradient-to-b from-purple-900/40 to-[#090514] border border-amber-400/50 rounded-2xl p-6 flex flex-col justify-between shadow-[0_0_30px_rgba(251,191,36,0.15)]">
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs font-bold uppercase px-3 py-1 rounded-full bg-amber-400/20 text-amber-300 border border-amber-400/40">
-                      {lang === 'ar' ? 'صنّاع المحتوى والمدربين' : 'Creators & Coaches'}
-                    </span>
-                    <Crown className="w-5 h-5 text-amber-400" />
-                  </div>
-                  <div className="text-3xl font-extrabold text-amber-300 mb-1">
-                    $12 <span className="text-xs font-normal text-purple-200/70">/ شهرياً</span>
-                  </div>
-                  <p className="text-xs text-purple-200/70 mb-4">
-                    {lang === 'ar'
-                      ? 'حوّل فيديوهاتك الطويلة وكتبك إلى ملخصات جاهزة لمتابعيك'
-                      : 'Turn long tutorials & books into downloadable PDF/Notion guides'}
-                  </p>
-                  <ul className="space-y-2 text-xs text-purple-100/90 mb-6">
-                    <li>✓ تحويل عدد غير محدود من الشروحات والكتب شهرياً</li>
-                    <li>✓ تصدير احترافي PDF و Notion جاهز للتوزيع</li>
-                    <li>✓ ربط بوت تيليجرام للحفظ الفوري</li>
-                  </ul>
-                </div>
-                <button
-                  onClick={() =>
-                    alert(
-                      lang === 'ar'
-                        ? 'سيتم ربط بوابة الدفع قريباً! (باقة المدربين 12$/شهر)'
-                        : 'Payment gateway integration coming soon!'
-                    )
-                  }
-                  className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-[#180a2e] font-extrabold py-2.5 rounded-xl text-sm transition cursor-pointer shadow-[0_0_20px_rgba(251,191,36,0.35)]"
-                >
-                  {lang === 'ar' ? 'اشترك الآن ($12/شهر)' : 'Subscribe ($12/mo)'}
-                </button>
-              </div>
+      {/* التصميم (2026-11-24): تأكيد داخل التطبيق قبل الحذف النهائي. */}
+      {pendingDeleteId && (
+        <div
+          className="fixed inset-0 z-50 bg-[#05020d]/85 backdrop-blur-md flex items-center justify-center p-4"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="delete-confirm-title"
+        >
+          <div className="bg-gradient-to-b from-[#1a0d38] to-[#0d061f] border border-fuchsia-500/40 rounded-3xl max-w-sm w-full p-6 relative shadow-[0_0_60px_rgba(192,38,211,0.35)]">
+            <h2 id="delete-confirm-title" className="text-lg font-extrabold text-white mb-2">
+              {t.deleteConfirmTitle}
+            </h2>
+            <p className="text-sm text-purple-200/85 mb-6">{t.deleteConfirmText}</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  handleDelete(pendingDeleteId);
+                  setPendingDeleteId(null);
+                }}
+                className="flex-1 min-h-11 bg-gradient-to-r from-fuchsia-600 to-rose-600 text-white font-bold py-2.5 rounded-xl cursor-pointer"
+              >
+                {t.confirmDeleteBtn}
+              </button>
+              <button
+                onClick={() => setPendingDeleteId(null)}
+                className="flex-1 min-h-11 bg-purple-900/50 text-purple-100 border border-purple-500/30 font-semibold py-2.5 rounded-xl cursor-pointer"
+              >
+                {t.cancelBtn}
+              </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* نافذة الباقات والرصيد */}
+      {showPricingModal && (
+        <PricingModal
+          credits={credits}
+          planType={planType}
+          lang={lang}
+          onClose={() => setShowPricingModal(false)}
+        />
       )}
     </div>
   );

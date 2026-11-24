@@ -9,6 +9,11 @@
 .env
 .env.local
 .env.*.local
+.env.production
+# SECURITY (2026-11-24 audit): .env.development and .env.test were not
+# covered. Exclude every .env.* file except the (empty) example.
+.env.*
+!.env.example
 
 # logs
 npm-debug.log*

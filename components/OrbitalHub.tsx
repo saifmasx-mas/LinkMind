@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Sparkles } from 'lucide-react';
 
 export type SourceFilter =
@@ -182,6 +182,34 @@ export default function OrbitalHub({
   lang,
 }: OrbitalHubProps) {
   const [isPaused, setIsPaused] = useState(false);
+  // التصميم (2026-11-24): احترام تفضيل تقليل الحركة في النظام:
+  // الدوران يتوقف تلقائياً عند تفعيله.
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const apply = () => {
+      setPrefersReducedMotion(mq.matches);
+      if (mq.matches) setIsPaused(true);
+    };
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, []);
+
+  // التصميم (2026-11-24): تسمية واضحة لكل زر مدار لقارئ الشاشة.
+  const nodeLabel = (node: OrbitNode, count: number, isSelected: boolean) => {
+    if (lang === 'ar')
+      return isSelected
+        ? `إلغاء التصفية حسب ${node.label}`
+        : `تصفية حسب ${node.label} (${count})`;
+    if (lang === 'tr')
+      return isSelected
+        ? `${node.label} filtresini kaldır`
+        : `${node.label} ile filtrele (${count})`;
+    return isSelected
+      ? `Clear filter by ${node.label}`
+      : `Filter by ${node.label} (${count})`;
+  };
 
   const innerNodes = ORBIT_NODES.filter((n) => n.ring === 'inner');
   const outerNodes = ORBIT_NODES.filter((n) => n.ring === 'outer');
@@ -225,7 +253,13 @@ export default function OrbitalHub({
       {/* حاوية المجرة المدارية */}
       <div
         onMouseEnter={() => setIsPaused(true)}
-        onMouseLeave={() => setIsPaused(false)}
+        onMouseLeave={() => {
+          if (!prefersReducedMotion) setIsPaused(false);
+        }}
+        onTouchStart={() => setIsPaused(true)}
+        onTouchEnd={() => {
+          if (!prefersReducedMotion) setIsPaused(false);
+        }}
         className="relative w-[320px] h-[320px] sm:w-[390px] sm:h-[390px] flex items-center justify-center"
       >
         {/* هالة سديمية متوهجة خلف المجرة */}
@@ -252,6 +286,8 @@ export default function OrbitalHub({
                   type="button"
                   onClick={() => onSelectSource(isSelected ? 'all' : node.id)}
                   title={`${node.label} (${count})`}
+                  aria-label={nodeLabel(node, count, isSelected)}
+                  aria-pressed={isSelected}
                   className={`w-12 h-12 rounded-2xl bg-[#140a2b]/90 backdrop-blur-xl border flex flex-col items-center justify-center transition-transform duration-300 hover:scale-125 cursor-pointer animate-counter-ccw ${
                     isPaused ? 'paused-orbit' : ''
                   } ${
@@ -281,12 +317,14 @@ export default function OrbitalHub({
                 style={{
                   transform: `rotate(${node.angle}deg) translateY(-136px) rotate(-${node.angle}deg)`,
                 }}
-                className="flex sm:hidden absolute top-1/2 left-1/2 -ml-5 -mt-5 w-10 h-10 items-center justify-center"
+                className="flex sm:hidden absolute top-1/2 left-1/2 -ml-[22px] -mt-[22px] w-11 h-11 items-center justify-center"
               >
                 <button
                   type="button"
                   onClick={() => onSelectSource(isSelected ? 'all' : node.id)}
-                  className={`w-10 h-10 rounded-xl bg-[#140a2b]/90 backdrop-blur-xl border flex items-center justify-center cursor-pointer animate-counter-ccw ${
+                  aria-label={nodeLabel(node, count, isSelected)}
+                  aria-pressed={isSelected}
+                  className={`w-11 h-11 rounded-xl bg-[#140a2b]/90 backdrop-blur-xl border flex items-center justify-center cursor-pointer animate-counter-ccw ${
                     isPaused ? 'paused-orbit' : ''
                   } ${
                     isSelected
@@ -327,6 +365,8 @@ export default function OrbitalHub({
                   type="button"
                   onClick={() => onSelectSource(isSelected ? 'all' : node.id)}
                   title={`${node.label} (${count})`}
+                  aria-label={nodeLabel(node, count, isSelected)}
+                  aria-pressed={isSelected}
                   className={`w-12 h-12 rounded-2xl bg-[#160b30]/95 backdrop-blur-xl border flex items-center justify-center transition-transform duration-300 hover:scale-125 cursor-pointer animate-counter-cw ${
                     isPaused ? 'paused-orbit' : ''
                   } ${
@@ -356,12 +396,14 @@ export default function OrbitalHub({
                 style={{
                   transform: `rotate(${node.angle}deg) translateY(-95px) rotate(-${node.angle}deg)`,
                 }}
-                className="flex sm:hidden absolute top-1/2 left-1/2 -ml-5 -mt-5 w-10 h-10 items-center justify-center"
+                className="flex sm:hidden absolute top-1/2 left-1/2 -ml-[22px] -mt-[22px] w-11 h-11 items-center justify-center"
               >
                 <button
                   type="button"
                   onClick={() => onSelectSource(isSelected ? 'all' : node.id)}
-                  className={`w-10 h-10 rounded-xl bg-[#160b30]/95 backdrop-blur-xl border flex items-center justify-center cursor-pointer animate-counter-cw ${
+                  aria-label={nodeLabel(node, count, isSelected)}
+                  aria-pressed={isSelected}
+                  className={`w-11 h-11 rounded-xl bg-[#160b30]/95 backdrop-blur-xl border flex items-center justify-center cursor-pointer animate-counter-cw ${
                     isPaused ? 'paused-orbit' : ''
                   } ${
                     isSelected
@@ -386,6 +428,13 @@ export default function OrbitalHub({
           type="button"
           onClick={() => onSelectSource('all')}
           title={lang === 'ar' ? 'عرض جميع المصادر' : 'Show All Sources'}
+          aria-label={
+            lang === 'ar'
+              ? 'عرض جميع المصادر'
+              : lang === 'tr'
+              ? 'Tüm kaynakları göster'
+              : 'Show all sources'
+          }
           className={`relative z-10 w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-gradient-to-br from-[#230e4a] via-[#130729] to-[#2e0b42] border-2 flex flex-col items-center justify-center transition duration-300 cursor-pointer group ${
             selectedSource === 'all'
               ? 'border-amber-400 shadow-[0_0_40px_rgba(251,191,36,0.55)]'

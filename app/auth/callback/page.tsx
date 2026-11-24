@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { Sparkles } from 'lucide-react';
@@ -8,8 +8,13 @@ import { Sparkles } from 'lucide-react';
 export default function AuthCallback() {
   const router = useRouter();
   const [error, setError] = useState('');
+  // N8: in StrictMode the effect runs twice in development, which would
+  // exchange the same code twice. Guard against a double exchange.
+  const didRun = useRef(false);
 
   useEffect(() => {
+    if (didRun.current) return;
+    didRun.current = true;
     const completeSignIn = async () => {
       const code = new URL(window.location.href).searchParams.get('code');
       if (code) {
