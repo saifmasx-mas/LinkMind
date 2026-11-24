@@ -33,6 +33,11 @@ export const translations = {
     telegramConnecting: 'جاري فتح Telegram...',
     telegramSignInRequired: 'سجّل الدخول إلى LinkMind أولاً.',
     telegramLinkFailed: 'تعذر إنشاء رابط ربط Telegram.',
+    duplicateLink: 'هذا الرابط محفوظ لديك مسبقاً.',
+    contentWarning:
+      'تعذّر جلب محتوى الرابط، فالملخص مبني على العنوان فقط — قد يكون ناقصاً.',
+    paymentUnavailable:
+      'بوابة الدفع غير متوفرة بعد. الشراء والاشتراك غير مفعّلين حالياً.',
     logoutBtn: 'خروج',
     categories: {
       All: 'الكل',
@@ -74,6 +79,11 @@ export const translations = {
     telegramConnecting: 'Telegram açılıyor...',
     telegramSignInRequired: 'Önce LinkMind hesabınıza giriş yapın.',
     telegramLinkFailed: 'Telegram bağlantısı oluşturulamadı.',
+    duplicateLink: 'Bu bağlantı zaten kütüphanenizde kayıtlı.',
+    contentWarning:
+      'Bağlantının içeriği alınamadı, bu yüzden özet yalnızca başlığa dayanıyor — eksik olabilir.',
+    paymentUnavailable:
+      'Ödeme sistemi henüz hazır değil. Satın alma ve abonelik şu anda etkin değil.',
     logoutBtn: 'Çıkış',
     categories: {
       All: 'Tümü',
@@ -115,6 +125,11 @@ export const translations = {
     telegramConnecting: 'Opening Telegram...',
     telegramSignInRequired: 'Sign in to LinkMind first.',
     telegramLinkFailed: 'Could not create a Telegram link.',
+    duplicateLink: 'This link is already saved in your library.',
+    contentWarning:
+      'The link content could not be fetched, so the summary is based on the title only — it may be incomplete.',
+    paymentUnavailable:
+      'Payments are not available yet. Buying and subscribing are currently disabled.',
     logoutBtn: 'Logout',
     categories: {
       All: 'All',

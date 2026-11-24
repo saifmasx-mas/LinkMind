@@ -5,7 +5,9 @@ import {
   type GenerateContentResponse,
 } from '@google/genai';
 
-const GENERATION_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
+// 'gemini-3.5-flash-lite' was removed: it is deprecated and its only effect
+// was a wasted failing request on every generation.
+const GENERATION_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash'];
 const FALLBACK_STATUSES = new Set([404, 408, 429, 500, 502, 503, 504]);
 
 export async function generateContentWithFallback(
