@@ -16,6 +16,22 @@ export const maxDuration = 60;
 // 1.8 MB, but the server must enforce its own limit (the client can be bypassed).
 const MAX_BOOK_BASE64_BYTES = 5 * 1024 * 1024;
 
+// TIMEOUT FIX (2026-11-25): the optional embedding call has no deadline of
+// its own — a hung embedContent could push the request past Vercel's 60s
+// limit and surface as a 504. Race it against a short timer; on timeout the
+// embedding is simply skipped, exactly like an embedding error today.
+const EMBEDDING_TIMEOUT_MS = 8_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
 function extractYouTubeId(url: string): string | null {
   const regExp =
     /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
@@ -422,13 +438,17 @@ URL: ${finalUrl}`;
     }
 
     try {
-      const embRes = await ai.models.embedContent({
-        model: 'text-embedding-004',
-        contents: `${finalTitle}. ${finalSummary}. ${finalChecklist.join(' ')}`,
-      });
+      const embRes = await withTimeout(
+        ai.models.embedContent({
+          model: 'text-embedding-004',
+          contents: `${finalTitle}. ${finalSummary}. ${finalChecklist.join(' ')}`,
+        }),
+        EMBEDDING_TIMEOUT_MS,
+        'Embedding timed out'
+      );
       embedding = embRes.embeddings?.[0]?.values || [];
     } catch {
-      // An embedding is optional; a failed embedding must not fail the analysis.
+      // An embedding is optional; a failed or timed-out embedding must not fail the analysis.
     }
 
     // Deduct only after a successful AI analysis (see C7 above).
