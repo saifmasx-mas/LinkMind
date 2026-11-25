@@ -28,7 +28,12 @@ for (const [subnet, prefix] of [
 for (const [subnet, prefix] of [
   ['::', 128],
   ['::1', 128],
-  ['::ffff:0:0', 96],
+  // NOTE: do NOT add a '::ffff:0:0/96' rule here. Node represents IPv4
+  // addresses internally as ::ffff:a.b.c.d, so that rule matched EVERY
+  // IPv4 address and blocked all public fetches (YouTube API, oEmbed,
+  // TikTok pages). IPv4-mapped IPv6 literals (::ffff:10.0.0.1 etc.) are
+  // still blocked: BlockList.check matches them against the IPv4 rules
+  // above, verified in Node 24.
   ['64:ff9b::', 96],
   ['100::', 64],
   ['2001::', 23],
@@ -41,7 +46,7 @@ for (const [subnet, prefix] of [
   blockedAddresses.addSubnet(subnet, prefix, 'ipv6');
 }
 
-const MAX_RESPONSE_BYTES = 1_000_000;
+const MAX_RESPONSE_BYTES = 3_000_000;
 const MAX_REDIRECTS = 3;
 
 interface SafeResponse {
@@ -53,9 +58,16 @@ interface SafeResponse {
 async function resolvePublicAddress(hostname: string) {
   const normalizedHost = hostname.replace(/^\[|\]$/g, '');
   const family = isIP(normalizedHost);
+  // Prefer IPv4 explicitly: some environments (incl. Vercel) may lack
+  // IPv6 egress, and DNS may pin an IPv6 address that cannot connect.
+  // `verbatim: true` used to return DNS order untouched; sorting IPv4
+  // first makes the pinned address (addresses[0]) an IPv4 one whenever
+  // the host has one.
   const addresses = family
     ? [{ address: normalizedHost, family }]
-    : await lookup(normalizedHost, { all: true, verbatim: true });
+    : (await lookup(normalizedHost, { all: true })).sort(
+        (a, b) => a.family - b.family
+      );
 
   if (
     addresses.length === 0 ||

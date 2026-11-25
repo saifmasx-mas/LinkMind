@@ -51,9 +51,21 @@ export async function fetchYouTubeApiMetadata(
       0,
       { accept: 'application/json' }
     );
-    if (res.status < 200 || res.status >= 300) return null;
+    if (res.status < 200 || res.status >= 300) {
+      console.error(
+        '[youtube] Data API request failed with HTTP status',
+        res.status
+      );
+      return null;
+    }
     return parseYouTubeApiResponse(JSON.parse(res.body.toString('utf8')));
-  } catch {
+  } catch (error) {
+    // Log the failure for Vercel logs; never the request URL (it carries
+    // the API key) and never the key itself.
+    console.error(
+      '[youtube] Data API fetch failed:',
+      error instanceof Error ? error.message : 'unknown error'
+    );
     return null;
   }
 }
@@ -106,9 +118,19 @@ export async function fetchYouTubeOEmbed(
       0,
       { accept: 'application/json' }
     );
-    if (res.status < 200 || res.status >= 300) return null;
+    if (res.status < 200 || res.status >= 300) {
+      console.error(
+        '[youtube] oEmbed request failed with HTTP status',
+        res.status
+      );
+      return null;
+    }
     return parseYouTubeOEmbedResponse(JSON.parse(res.body.toString('utf8')));
-  } catch {
+  } catch (error) {
+    console.error(
+      '[youtube] oEmbed fetch failed:',
+      error instanceof Error ? error.message : 'unknown error'
+    );
     return null;
   }
 }
