@@ -526,6 +526,21 @@ export default function Home() {
         return;
       }
 
+      // NO-CONTENT FIX (2026-11-25): the server could not fetch any real
+      // content for this link, so no summary was created and no credit was
+      // deducted. Show the server's plain-Arabic message instead of the
+      // generic "AI unavailable" one.
+      if (data.error === 'CONTENT_UNAVAILABLE') {
+        setNotice(
+          typeof data.message === 'string' && data.message
+            ? data.message
+            : lang === 'ar'
+              ? 'تعذّر جلب محتوى هذا الرابط، فلم يتم إنشاء ملخص. جرّب رابطاً آخر، ولم يُخصم أي رصيد.'
+              : 'Could not fetch this link’s content, so no summary was created. Try another link; no credit was deducted.'
+        );
+        return;
+      }
+
       if (res.status === 503 || data.error === 'AI_UNAVAILABLE') {
         setNotice(
           lang === 'ar'
