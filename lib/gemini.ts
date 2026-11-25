@@ -18,18 +18,18 @@ import {
 const GENERATION_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
 const FALLBACK_STATUSES = new Set([404, 408, 429, 500, 502, 503, 504]);
 
-// TIMEOUT FIX (2026-11-25): a hung Gemini socket used to hang the whole
-// /api/analyze request until Vercel killed it at 60s (HTTP 504, non-JSON),
-// which the frontend showed as a generic "could not save" error. Each
-// attempt is now time-boxed and the whole fallback chain has an overall
-// budget, so a hung call fails fast and the next model is tried; when the
-// budget is spent the helper throws and the route answers 503
-// AI_UNAVAILABLE instead of timing out. Vercel's function limit is 60s;
-// the budget stays well below it.
+// FOLLOW-UP FIX (2026-11-25): the first version used a ~20s per-attempt
+// timeout with SDK retry attempts: 2, so ONE slow model could burn the
+// whole ~40s budget on its own (in production, gemini-3.8-flash took ~30s
+// then returned 504, and both fallback models were aborted at ~42.6s
+// without a real attempt). Per-attempt is now ~12s and the SDK does NOT
+// retry (attempts: 1) — the model fallback chain IS the retry mechanism.
+// Worst case the Gemini stage is min(3 x 12s, 40s) = ~36s, so all three
+// models each get a real chance before the budget is spent.
 // Per-attempt deadline, enforced by the SDK's abort timer (config.httpOptions
 // .timeout, verified in @google/genai's genai.d.ts) and sent to the server
 // as an X-Server-Timeout header.
-const GENERATION_ATTEMPT_TIMEOUT_MS = 20_000;
+const GENERATION_ATTEMPT_TIMEOUT_MS = 12_000;
 // Overall wall-clock budget for the whole fallback chain, enforced with an
 // AbortSignal passed as config.abortSignal (also verified in genai.d.ts).
 // The SDK stops its own retries as soon as this signal aborts.
@@ -72,11 +72,14 @@ export async function generateContentWithFallback(
           abortSignal: overallSignal,
           httpOptions: {
             ...request.config?.httpOptions,
-            // Per-attempt deadline: a hung socket fails at ~20s instead of
+            // Per-attempt deadline: a hung socket fails at ~12s instead of
             // hanging until Vercel kills the request.
             timeout: GENERATION_ATTEMPT_TIMEOUT_MS,
             retryOptions: {
-              attempts: 2,
+              // No SDK-level retry: the model fallback chain below IS the
+              // retry mechanism. Retrying inside one slow model would eat
+              // the overall budget before the next model is tried.
+              attempts: 1,
               initialDelay: 1,
               maxDelay: 2,
               httpStatusCodes: [408, 429, 500, 502, 503, 504],
