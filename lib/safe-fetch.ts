@@ -69,7 +69,20 @@ async function resolvePublicAddress(hostname: string) {
   return addresses[0];
 }
 
-export async function fetchPublicUrl(input: string | URL, redirects = 0): Promise<SafeResponse> {
+export interface FetchPublicUrlOptions {
+  // Per-domain User-Agent override (e.g. a mobile UA for TikTok pages,
+  // which serve a stripped page to unknown bots). Defaults to LinkMindBot.
+  userAgent?: string;
+  // Per-domain Accept override (e.g. application/json for the YouTube
+  // Data API). Defaults to the HTML accept list below.
+  accept?: string;
+}
+
+export async function fetchPublicUrl(
+  input: string | URL,
+  redirects = 0,
+  options: FetchPublicUrlOptions = {}
+): Promise<SafeResponse> {
   const url = input instanceof URL ? input : new URL(input);
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
   if (
@@ -107,8 +120,8 @@ export async function fetchPublicUrl(input: string | URL, redirects = 0): Promis
       {
         lookup: pinnedLookup,
         headers: {
-          Accept: 'text/html,application/xhtml+xml',
-          'User-Agent': 'LinkMindBot/1.0',
+          Accept: options.accept ?? 'text/html,application/xhtml+xml',
+          'User-Agent': options.userAgent ?? 'LinkMindBot/1.0',
         },
         maxHeaderSize: 16_384,
         servername: isIP(hostname) ? undefined : hostname,
@@ -129,7 +142,7 @@ export async function fetchPublicUrl(input: string | URL, redirects = 0): Promis
             fail(error instanceof Error ? error : new Error('Invalid redirect URL'));
             return;
           }
-          void fetchPublicUrl(nextUrl, redirects + 1).then(
+          void fetchPublicUrl(nextUrl, redirects + 1, options).then(
             (result) => {
               if (!settled) {
                 settled = true;
