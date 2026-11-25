@@ -22,6 +22,13 @@ const MAX_BOOK_BASE64_BYTES = 5 * 1024 * 1024;
 // embedding is simply skipped, exactly like an embedding error today.
 const EMBEDDING_TIMEOUT_MS = 8_000;
 
+// FOLLOW-UP FIX (2026-11-25): even an 8s embedding race is too much when
+// the request is already old — a slow fetch plus a slow Gemini stage can
+// leave the request at ~45s, and 8 more seconds would push it past the
+// frontend's 55s abort. Skip the optional embedding entirely once the
+// request is past this age; the analysis still succeeds with [].
+const EMBEDDING_DEADLINE_MS = 45_000;
+
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -103,6 +110,10 @@ async function resolveShortUrl(url: string): Promise<string> {
 
 export async function POST(req: Request) {
   try {
+    // Wall-clock start of the request, used by the deadline-aware
+    // embedding skip below (see EMBEDDING_DEADLINE_MS).
+    const requestStartedAt = Date.now();
+
     // C1: never trust a userId from the request body. The caller must prove
     // who they are with their Supabase session token.
     const userId = await getAuthenticatedUserId(req);
@@ -437,18 +448,24 @@ URL: ${finalUrl}`;
       contentWarning = true;
     }
 
-    try {
-      const embRes = await withTimeout(
-        ai.models.embedContent({
-          model: 'text-embedding-004',
-          contents: `${finalTitle}. ${finalSummary}. ${finalChecklist.join(' ')}`,
-        }),
-        EMBEDDING_TIMEOUT_MS,
-        'Embedding timed out'
-      );
-      embedding = embRes.embeddings?.[0]?.values || [];
-    } catch {
-      // An embedding is optional; a failed or timed-out embedding must not fail the analysis.
+    // Deadline-aware: if the request is already past ~45s (slow fetch +
+    // slow Gemini), skip the optional embedding entirely — spending up to
+    // 8 more seconds on it could push the request past the frontend's 55s
+    // abort. The analysis still succeeds with embedding = [].
+    if (Date.now() - requestStartedAt <= EMBEDDING_DEADLINE_MS) {
+      try {
+        const embRes = await withTimeout(
+          ai.models.embedContent({
+            model: 'text-embedding-004',
+            contents: `${finalTitle}. ${finalSummary}. ${finalChecklist.join(' ')}`,
+          }),
+          EMBEDDING_TIMEOUT_MS,
+          'Embedding timed out'
+        );
+        embedding = embRes.embeddings?.[0]?.values || [];
+      } catch {
+        // An embedding is optional; a failed or timed-out embedding must not fail the analysis.
+      }
     }
 
     // Deduct only after a successful AI analysis (see C7 above).
