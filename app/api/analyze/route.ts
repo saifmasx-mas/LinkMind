@@ -4,6 +4,8 @@ import { YoutubeTranscript } from 'youtube-transcript';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createSupabaseAdminClient } from '@/lib/supabase-admin';
 import { fetchPublicUrl } from '@/lib/safe-fetch';
+import { fetchYouTubeApiMetadata, fetchYouTubeOEmbed } from '@/lib/youtube';
+import { fetchTikTokOEmbed, fetchTikTokPageMetadata } from '@/lib/tiktok';
 import { generateContentWithFallback } from '@/lib/gemini';
 import { getAuthenticatedUserId } from '@/lib/auth';
 import { deductCredit } from '@/lib/credits';
@@ -227,6 +229,13 @@ export async function POST(req: Request) {
     // the fetch stage) and to stop Gemini overwriting a real title.
     let hasRealTitle = Boolean(bookTitle);
     let hasTranscript = false;
+    // REAL-CONTENT FIX (2026-11-26): a real description (YouTube Data API
+    // description, or a TikTok page description) is real content too, even
+    // with no transcript — the summary is then built from the metadata.
+    // `metadataOnly` is true when the summary must come from metadata
+    // alone, so the prompt can forbid inventing details (see below).
+    let hasRealDescription = false;
+    let metadataOnly = false;
     // I7: set when the page/transcript could not be fetched, so the summary
     // is based on the title alone and the user is told about it.
     let contentWarning = false;
@@ -252,78 +261,120 @@ export async function POST(req: Request) {
       const videoId = extractYouTubeId(finalUrl);
 
       if (videoId) {
-        try {
-          const ytRes = await fetchPublicUrl(
-            `https://www.youtube.com/oembed?url=${encodeURIComponent(finalUrl)}&format=json`
-          );
-          if (ytRes.status >= 200 && ytRes.status < 300) {
-            const ytData = JSON.parse(ytRes.body.toString('utf8'));
-            if (ytData.title) hasRealTitle = true;
-            rawTitle = ytData.title || 'YouTube Tutorial';
-            rawDescription = `Channel: ${ytData.author_name || 'YouTube'}`;
-            image = ytData.thumbnail_url || '';
-          } else {
-            contentWarning = true;
-          }
-        } catch {
-          contentWarning = true;
-        }
+        // REAL-CONTENT FIX (2026-11-26): fetch the three sources in
+        // PARALLEL so the fetch stage stays at ~10s instead of ~23s
+        // sequential (oEmbed 8s + transcript 15s). Each source fails
+        // quietly; the merge below takes the best available result.
+        // 1) YouTube Data API v3 — primary: real title, full description,
+        //    channel, tags, duration. Skipped when YOUTUBE_API_KEY is
+        //    absent (safe fallback to oEmbed + transcript).
+        // 2) oEmbed — fallback for the title, and the only thumbnail source.
+        // 3) Transcript — still attempted for videos that have captions.
+        const apiKey = process.env.YOUTUBE_API_KEY?.trim() || undefined;
+        const [apiResult, oembedResult, transcriptResult] =
+          await Promise.allSettled([
+            fetchYouTubeApiMetadata(videoId, apiKey),
+            fetchYouTubeOEmbed(finalUrl),
+            withTimeout(
+              YoutubeTranscript.fetchTranscript(videoId),
+              10_000,
+              'Transcript timed out'
+            ),
+          ]);
+        const apiMeta =
+          apiResult.status === 'fulfilled' ? apiResult.value : null;
+        const oembed =
+          oembedResult.status === 'fulfilled' ? oembedResult.value : null;
+        const transcriptItems =
+          transcriptResult.status === 'fulfilled'
+            ? transcriptResult.value
+            : null;
 
-        try {
-          // NO-CONTENT FIX: the transcript fetch had no deadline — a hung
-          // request could eat the whole 60s Vercel budget. 15s is enough
-          // for a real transcript and leaves room for the Gemini stage.
-          const transcriptItems = await withTimeout(
-            YoutubeTranscript.fetchTranscript(videoId),
-            15_000,
-            'Transcript timed out'
-          );
+        if (apiMeta) {
+          hasRealTitle = true;
+          if (apiMeta.description) hasRealDescription = true;
+          rawTitle = apiMeta.title;
+          rawDescription = [
+            apiMeta.channelTitle ? `Channel: ${apiMeta.channelTitle}` : '',
+            apiMeta.description,
+            apiMeta.tags.length > 0 ? `Tags: ${apiMeta.tags.join(', ')}` : '',
+            apiMeta.duration ? `Duration: ${apiMeta.duration}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n');
+        } else if (oembed) {
+          hasRealTitle = true;
+          rawTitle = oembed.title;
+          rawDescription = `Channel: ${oembed.authorName || 'YouTube'}`;
+        }
+        if (oembed?.thumbnailUrl) image = oembed.thumbnailUrl;
+
+        if (transcriptItems && transcriptItems.length > 0) {
           bodyContent = transcriptItems
             .map((item) => item.text)
             .join(' ')
             .slice(0, 14000);
-          if (bodyContent) {
-            hasTranscript = true;
-          } else {
-            contentWarning = true;
-          }
-        } catch {
-          contentWarning = true;
+          if (bodyContent) hasTranscript = true;
         }
+        if (!apiMeta && !oembed && !hasTranscript) contentWarning = true;
+        // No transcript: the summary comes from the metadata alone.
+        metadataOnly = !hasTranscript;
       } else if (lowerUrl.includes('tiktok.com')) {
-        try {
-          let targetTikTokUrl = finalUrl;
-          if (lowerUrl.includes('vm.tiktok.com') || lowerUrl.includes('vt.tiktok.com')) {
-            targetTikTokUrl = await resolveShortUrl(finalUrl);
-          }
-          const cleanTikTokUrl = targetTikTokUrl.split('?')[0];
+        let targetTikTokUrl = finalUrl;
+        if (lowerUrl.includes('vm.tiktok.com') || lowerUrl.includes('vt.tiktok.com')) {
+          targetTikTokUrl = await resolveShortUrl(finalUrl);
+        }
+        const cleanTikTokUrl = targetTikTokUrl.split('?')[0];
 
-          const ttRes = await fetchPublicUrl(
-            `https://www.tiktok.com/oembed?url=${encodeURIComponent(cleanTikTokUrl)}`
-          );
+        // REAL-CONTENT FIX (2026-11-26): fetch both sources in PARALLEL.
+        // 1) The video page itself — primary: real description, author,
+        //    music, hashtags and statistics from the embedded JSON block.
+        // 2) oEmbed — fallback only: it answers 200 with no title and no
+        //    author by design, so it can only confirm the link exists.
+        const [pageResult, ttOembedResult] = await Promise.allSettled([
+          fetchTikTokPageMetadata(cleanTikTokUrl),
+          fetchTikTokOEmbed(cleanTikTokUrl),
+        ]);
+        const pageMeta =
+          pageResult.status === 'fulfilled' ? pageResult.value : null;
+        const ttOembed =
+          ttOembedResult.status === 'fulfilled' ? ttOembedResult.value : null;
 
-          if (ttRes.status >= 200 && ttRes.status < 300) {
-            const ttData = JSON.parse(ttRes.body.toString('utf8'));
-            // NO-CONTENT FIX: TikTok oEmbed answers 200 with NO title and
-            // NO author_name — that is an empty success by design, not real
-            // content. Only a real title counts.
-            if (ttData.title) hasRealTitle = true;
-            rawTitle = ttData.title || `TikTok by ${ttData.author_name || 'Creator'}`;
-            rawDescription = `TikTok Video by ${ttData.author_name || ''} (@${ttData.author_unique_id || ''}): ${ttData.title || ''}`;
-            image = ttData.thumbnail_url || '';
-            bodyContent = rawDescription;
-          } else {
-            contentWarning = true;
-            rawTitle = 'TikTok Video';
-            rawDescription = `TikTok Video URL: ${cleanTikTokUrl}`;
-            bodyContent = rawDescription;
-          }
-        } catch {
+        if (pageMeta) {
+          hasRealTitle = true;
+          hasRealDescription = true;
+          rawTitle = pageMeta.title;
+          rawDescription = [
+            pageMeta.description,
+            pageMeta.author
+              ? `Author: ${pageMeta.authorNickname || pageMeta.author} (@${pageMeta.author})`
+              : '',
+            pageMeta.musicTitle ? `Music: ${pageMeta.musicTitle}` : '',
+            pageMeta.tags.length > 0
+              ? `Hashtags: ${pageMeta.tags.map((t) => `#${t}`).join(' ')}`
+              : '',
+            `Views: ${pageMeta.playCount}, likes: ${pageMeta.likeCount}, comments: ${pageMeta.commentCount}`,
+          ]
+            .filter(Boolean)
+            .join('\n');
+          bodyContent = rawDescription;
+          // TikTok never has a transcript: the summary comes from the
+          // metadata alone.
+          metadataOnly = true;
+        } else if (ttOembed) {
+          hasRealTitle = true;
+          rawTitle = ttOembed.title;
+          rawDescription = `TikTok Video by ${ttOembed.authorName || ''} (@${ttOembed.authorUniqueId || ''}): ${ttOembed.title}`;
+          image = ttOembed.thumbnailUrl || '';
+          bodyContent = rawDescription;
+        } else {
           contentWarning = true;
           rawTitle = 'TikTok Video';
-          rawDescription = `TikTok Video URL: ${finalUrl}`;
+          rawDescription = `TikTok Video URL: ${cleanTikTokUrl}`;
           bodyContent = rawDescription;
         }
+        // The page metadata has no thumbnail; keep oEmbed's when present.
+        if (pageMeta && ttOembed?.thumbnailUrl) image = ttOembed.thumbnailUrl;
       } else {
         // C4: all public page fetches go through fetchPublicUrl, which blocks
         // private/loopback/cloud-metadata addresses, pins DNS, limits the
@@ -367,21 +418,22 @@ export async function POST(req: Request) {
         }
       }
 
-      // NO-CONTENT FIX (2026-11-25): when the fetch stage brought back no
-      // real content, do NOT send a near-empty prompt to Gemini — the model
-      // invents a title, summary and category that have nothing to do with
-      // the source, and that invented result used to be saved and charged
-      // for (e.g. a nasheed saved as a Python GPT tutorial, a comedy clip
-      // saved as a digital-growth guide). Fail fast instead: 503
-      // CONTENT_UNAVAILABLE, no Gemini call, no save, no credit deduction.
-      // YouTube has no real content when BOTH the transcript and the oEmbed
-      // title are missing; a title alone (or a transcript alone) still
-      // proceeds as before. TikTok has no real content when oEmbed gave no
-      // title — even its 200 responses can be empty by design.
+      // NO-CONTENT FIX (2026-11-25) + REAL-CONTENT FIX (2026-11-26): when
+      // the fetch stage brought back no real content, do NOT send a
+      // near-empty prompt to Gemini — the model invents a title, summary
+      // and category that have nothing to do with the source, and that
+      // invented result used to be saved and charged for. Fail fast
+      // instead: 503 CONTENT_UNAVAILABLE, no Gemini call, no save, no
+      // credit deduction. "Real content" now means a transcript OR a real
+      // title and/or a real description: a YouTube video with an API
+      // title + description (no captions) or a TikTok clip with a real
+      // page description now proceeds to a metadata-based summary instead
+      // of failing. Only when ALL sources fail does the 503 path trigger.
       const isYouTubeLink = Boolean(videoId);
       const isTikTokLink = !videoId && lowerUrl.includes('tiktok.com');
       const hasNoRealContent =
-        (isYouTubeLink && !hasTranscript && !hasRealTitle) || (isTikTokLink && !hasRealTitle);
+        (isYouTubeLink && !hasTranscript && !hasRealTitle && !hasRealDescription) ||
+        (isTikTokLink && !hasRealTitle && !hasRealDescription);
       if (hasNoRealContent) {
         return NextResponse.json(
           {
@@ -401,6 +453,13 @@ export async function POST(req: Request) {
         : lang === 'tr'
         ? 'Write the title, summary, and checklist steps in clear, natural Turkish.'
         : 'Write the title, summary, and checklist steps in clear, natural English.';
+
+    // REAL-CONTENT FIX (2026-11-26): when there is no transcript, the
+    // summary comes from the metadata alone. Say so explicitly — otherwise
+    // the model fills the gaps with invented details, quotes or steps.
+    const metadataOnlyNote = metadataOnly
+      ? '\nIMPORTANT: No transcript or full text is available for this video. Summarize ONLY from the title, description, channel/author, tags and statistics provided below. Do NOT invent details, quotes, timestamps or steps that are not in the provided metadata. If the metadata is thin, keep the summary short and factual.'
+      : '';
 
     let finalTitle = rawTitle.trim() || finalUrl;
     let finalSummary = rawDescription.trim() || 'Saved resource';
@@ -435,6 +494,7 @@ ${bodyContent ? `Content: ${bodyContent}` : ''}`
 2. A 2-sentence executive summary.
 3. Category: ONLY one of "Programming", "Learning", "Business", "General".
 4. Actionable Checklist: 4 to 7 practical step-by-step instructions or key takeaways.
+${metadataOnlyNote}
 
 ${langInstruction}
 
