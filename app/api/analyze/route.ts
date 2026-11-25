@@ -218,6 +218,15 @@ export async function POST(req: Request) {
     let image = '';
     let finalUrl = String(url || '').trim();
     const isBookOrDoc = Boolean(bookText || bookBase64);
+    // NO-CONTENT FIX (2026-11-25): track whether the fetch stage actually
+    // brought back real content. `hasRealTitle` is true only for a genuine
+    // title fetched from the source (oEmbed / og:title / book title) — never
+    // for a placeholder such as 'YouTube Tutorial' or 'TikTok Video'.
+    // `hasTranscript` is true only when a real YouTube transcript was fetched.
+    // Both are used below to refuse invented summaries (see the gate after
+    // the fetch stage) and to stop Gemini overwriting a real title.
+    let hasRealTitle = Boolean(bookTitle);
+    let hasTranscript = false;
     // I7: set when the page/transcript could not be fetched, so the summary
     // is based on the title alone and the user is told about it.
     let contentWarning = false;
@@ -249,6 +258,7 @@ export async function POST(req: Request) {
           );
           if (ytRes.status >= 200 && ytRes.status < 300) {
             const ytData = JSON.parse(ytRes.body.toString('utf8'));
+            if (ytData.title) hasRealTitle = true;
             rawTitle = ytData.title || 'YouTube Tutorial';
             rawDescription = `Channel: ${ytData.author_name || 'YouTube'}`;
             image = ytData.thumbnail_url || '';
@@ -260,12 +270,23 @@ export async function POST(req: Request) {
         }
 
         try {
-          const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
+          // NO-CONTENT FIX: the transcript fetch had no deadline — a hung
+          // request could eat the whole 60s Vercel budget. 15s is enough
+          // for a real transcript and leaves room for the Gemini stage.
+          const transcriptItems = await withTimeout(
+            YoutubeTranscript.fetchTranscript(videoId),
+            15_000,
+            'Transcript timed out'
+          );
           bodyContent = transcriptItems
             .map((item) => item.text)
             .join(' ')
             .slice(0, 14000);
-          if (!bodyContent) contentWarning = true;
+          if (bodyContent) {
+            hasTranscript = true;
+          } else {
+            contentWarning = true;
+          }
         } catch {
           contentWarning = true;
         }
@@ -283,6 +304,10 @@ export async function POST(req: Request) {
 
           if (ttRes.status >= 200 && ttRes.status < 300) {
             const ttData = JSON.parse(ttRes.body.toString('utf8'));
+            // NO-CONTENT FIX: TikTok oEmbed answers 200 with NO title and
+            // NO author_name — that is an empty success by design, not real
+            // content. Only a real title counts.
+            if (ttData.title) hasRealTitle = true;
             rawTitle = ttData.title || `TikTok by ${ttData.author_name || 'Creator'}`;
             rawDescription = `TikTok Video by ${ttData.author_name || ''} (@${ttData.author_unique_id || ''}): ${ttData.title || ''}`;
             image = ttData.thumbnail_url || '';
@@ -309,10 +334,12 @@ export async function POST(req: Request) {
           if (res.status >= 200 && res.status < 300 && contentType.includes('text/html')) {
             const html = res.body.toString('utf8');
             const $ = cheerio.load(html);
-            rawTitle =
-              $('meta[property="og:title"]').attr('content') ||
-              $('title').text() ||
-              finalUrl;
+            const pageTitle =
+              $('meta[property="og:title"]').attr('content') || $('title').text() || '';
+            // NO-CONTENT FIX: only a real fetched page title counts — the
+            // bare URL is not a title, so Gemini may replace it.
+            if (pageTitle) hasRealTitle = true;
+            rawTitle = pageTitle || finalUrl;
             rawDescription =
               $('meta[property="og:description"]').attr('content') ||
               $('meta[name="description"]').attr('content') ||
@@ -338,6 +365,33 @@ export async function POST(req: Request) {
           rawTitle = finalUrl;
           rawDescription = `Saved web resource: ${finalUrl}`;
         }
+      }
+
+      // NO-CONTENT FIX (2026-11-25): when the fetch stage brought back no
+      // real content, do NOT send a near-empty prompt to Gemini — the model
+      // invents a title, summary and category that have nothing to do with
+      // the source, and that invented result used to be saved and charged
+      // for (e.g. a nasheed saved as a Python GPT tutorial, a comedy clip
+      // saved as a digital-growth guide). Fail fast instead: 503
+      // CONTENT_UNAVAILABLE, no Gemini call, no save, no credit deduction.
+      // YouTube has no real content when BOTH the transcript and the oEmbed
+      // title are missing; a title alone (or a transcript alone) still
+      // proceeds as before. TikTok has no real content when oEmbed gave no
+      // title — even its 200 responses can be empty by design.
+      const isYouTubeLink = Boolean(videoId);
+      const isTikTokLink = !videoId && lowerUrl.includes('tiktok.com');
+      const hasNoRealContent =
+        (isYouTubeLink && !hasTranscript && !hasRealTitle) || (isTikTokLink && !hasRealTitle);
+      if (hasNoRealContent) {
+        return NextResponse.json(
+          {
+            error: 'CONTENT_UNAVAILABLE',
+            message:
+              'تعذّر جلب محتوى هذا الرابط، فلم يتم إنشاء ملخص. جرّب رابطاً آخر، ولم يُخصم أي رصيد.',
+            contentWarning: true,
+          },
+          { status: 503 }
+        );
       }
     }
 
@@ -435,7 +489,12 @@ URL: ${finalUrl}`;
 
     try {
       const parsed = JSON.parse(aiRes.text || '{}');
-      finalTitle = parsed.title || finalTitle;
+      // NO-CONTENT FIX: never let the model overwrite a real fetched title
+      // (e.g. the oEmbed title) with an invented one. The model's title is
+      // only accepted when the original title was missing in the first place.
+      if (!hasRealTitle && parsed.title) {
+        finalTitle = parsed.title;
+      }
       finalSummary = parsed.summary || finalSummary;
       if (['Programming', 'Learning', 'Business', 'General'].includes(parsed.category)) {
         finalCategory = parsed.category;
