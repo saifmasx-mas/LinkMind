@@ -75,9 +75,19 @@ export async function fetchTikTokPageMetadata(
 ): Promise<TikTokMetadata | null> {
   try {
     const res = await fetchPublicUrl(videoUrl, 0, { userAgent: MOBILE_USER_AGENT });
-    if (res.status < 200 || res.status >= 300) return null;
+    if (res.status < 200 || res.status >= 300) {
+      console.error(
+        '[tiktok] video page request failed with HTTP status',
+        res.status
+      );
+      return null;
+    }
     return parseTikTokPageHtml(res.body.toString('utf8'));
-  } catch {
+  } catch (error) {
+    console.error(
+      '[tiktok] video page fetch failed:',
+      error instanceof Error ? error.message : 'unknown error'
+    );
     return null;
   }
 }
@@ -142,7 +152,13 @@ export async function fetchTikTokOEmbed(
       0,
       { accept: 'application/json' }
     );
-    if (res.status < 200 || res.status >= 300) return null;
+    if (res.status < 200 || res.status >= 300) {
+      console.error(
+        '[tiktok] oEmbed request failed with HTTP status',
+        res.status
+      );
+      return null;
+    }
     const data = JSON.parse(res.body.toString('utf8'));
     const title = typeof data?.title === 'string' ? data.title.trim() : '';
     if (!title) return null;
@@ -154,7 +170,11 @@ export async function fetchTikTokOEmbed(
       thumbnailUrl:
         typeof data?.thumbnail_url === 'string' ? data.thumbnail_url : '',
     };
-  } catch {
+  } catch (error) {
+    console.error(
+      '[tiktok] oEmbed fetch failed:',
+      error instanceof Error ? error.message : 'unknown error'
+    );
     return null;
   }
 }
