@@ -13,6 +13,9 @@
 // Regression test for: books only ever sent their first ~14,000
 // characters to Gemini with a "3-sentence summary" prompt, so the result
 // covered only the most important ideas of the beginning of the book.
+// Long articles pasted as links (a blog such as Blogger, or any other
+// article page) use the same comprehensive path with kind: 'article'
+// — section 9 below covers that.
 
 import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
@@ -124,7 +127,7 @@ function makeFakeAi({ failOnceTitles = new Set(), failAlwaysTitles = new Set() }
       generateContent: async (req) => {
         calls += 1;
         const contents = typeof req.contents === 'string' ? req.contents : '';
-        const heading = contents.match(/Chapter heading: (.+)\n/)?.[1] ?? 'Chapter';
+        const heading = contents.match(/(?:Chapter|Section) heading: (.+)\n/)?.[1] ?? 'Chapter';
         if (failAlwaysTitles.has(heading)) throw new Error('Request timed out');
         if (failOnceTitles.has(heading) && !seen.has(heading)) {
           seen.add(heading);
@@ -186,6 +189,33 @@ try {
   console.log(`\nFail-fast error (expected): ${error instanceof Error ? error.message : error}`);
 }
 check('persistent chapter failure fails the whole summary', threw);
+
+// 9) Article (blog) text: headings on their own lines split into
+// sections, and kind: 'article' combines them the same way as chapters.
+const articleText = [
+  'ما هي المدونة',
+  LONG_AR,
+  'كيف تبدأ مدونتك',
+  LONG_AR,
+  'كتابة مقال جيد',
+  LONG_AR,
+].join('\n');
+const articleSections = splitBookIntoChapters(articleText, 'ar');
+check('article headings split into >= 3 sections', articleSections.length >= 3, `${articleSections.length}`);
+const articleFull = await summarizeBookFull(makeFakeAi(), {
+  text: articleText,
+  lang: 'ar',
+  requestStartedAt: Date.now(),
+  kind: 'article',
+});
+check(
+  'article summary has all sections',
+  articleFull.summary.includes('ما هي المدونة') &&
+    articleFull.summary.includes('كيف تبدأ مدونتك') &&
+    articleFull.summary.includes('كتابة مقال جيد')
+);
+check('article summary uses bullet points', articleFull.summary.includes('• الفكرة الأولى'));
+check('article checklist has 6 items (2 per section)', articleFull.checklist.length === 6, `${articleFull.checklist.length}`);
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed`);
