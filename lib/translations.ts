@@ -44,6 +44,12 @@ export const translations = {
     telegramConnecting: 'جاري فتح Telegram...',
     telegramSignInRequired: 'سجّل الدخول إلى LinkMind أولاً.',
     telegramLinkFailed: 'تعذر إنشاء رابط ربط Telegram.',
+    adminSignupsTitle: 'المسجّلون الجدد',
+    adminSignupsEmpty: 'لا يوجد مسجّلون جدد بعد.',
+    adminSignupsRefresh: 'تحديث',
+    adminSignupsError: 'تعذّر تحميل المسجّلين الجدد.',
+    adminTelegramNotLinked:
+      'اربط Telegram من الزر في الأعلى ليصلك إشعار فوري عند كل تسجيل جديد.',
     duplicateLink: 'هذا الرابط محفوظ لديك مسبقاً.',
     contentWarning:
       'تعذّر جلب محتوى الرابط، فالملخص مبني على العنوان فقط — قد يكون ناقصاً.',
@@ -109,6 +115,12 @@ export const translations = {
     telegramConnecting: 'Telegram açılıyor...',
     telegramSignInRequired: 'Önce LinkMind hesabınıza giriş yapın.',
     telegramLinkFailed: 'Telegram bağlantısı oluşturulamadı.',
+    adminSignupsTitle: 'Yeni Kayıtlar',
+    adminSignupsEmpty: 'Henüz yeni kayıt yok.',
+    adminSignupsRefresh: 'Yenile',
+    adminSignupsError: 'Yeni kayıtlar yüklenemedi.',
+    adminTelegramNotLinked:
+      'Her yeni kayıtta anında bildirim almak için yukarıdaki düğmeden Telegram’ı bağlayın.',
     duplicateLink: 'Bu bağlantı zaten kütüphanenizde kayıtlı.',
     contentWarning:
       'Bağlantının içeriği alınamadı, bu yüzden özet yalnızca başlığa dayanıyor — eksik olabilir.',
@@ -175,6 +187,12 @@ export const translations = {
     telegramConnecting: 'Opening Telegram...',
     telegramSignInRequired: 'Sign in to LinkMind first.',
     telegramLinkFailed: 'Could not create a Telegram link.',
+    adminSignupsTitle: 'New Signups',
+    adminSignupsEmpty: 'No new signups yet.',
+    adminSignupsRefresh: 'Refresh',
+    adminSignupsError: 'Could not load new signups.',
+    adminTelegramNotLinked:
+      'Connect Telegram from the button above to get an instant notification for every new signup.',
     duplicateLink: 'This link is already saved in your library.',
     contentWarning:
       'The link content could not be fetched, so the summary is based on the title only — it may be incomplete.',
