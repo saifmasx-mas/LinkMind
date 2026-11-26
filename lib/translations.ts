@@ -58,7 +58,7 @@ export const translations = {
     contentWarning:
       'تعذّر جلب محتوى الرابط، فالملخص مبني على العنوان فقط — قد يكون ناقصاً.',
     paymentUnavailable:
-      'بوابة الدفع غير متوفرة بعد. الشراء والاشتراك غير مفعّلين حالياً.',
+      'الدفع حالياً عبر واتساب أو تيليجرام: اضغط زر الشراء وسيتم تفعيل باقتك يدوياً بعد إتمام الدفع.',
     logoutBtn: 'خروج',
     footerContact: 'اتصل بنا',
     footerPrivacy: 'سياسة الخصوصية',
@@ -133,7 +133,7 @@ export const translations = {
     contentWarning:
       'Bağlantının içeriği alınamadı, bu yüzden özet yalnızca başlığa dayanıyor — eksik olabilir.',
     paymentUnavailable:
-      'Ödeme sistemi henüz hazır değil. Satın alma ve abonelik şu anda etkin değil.',
+      'Ödeme şu anda WhatsApp veya Telegram üzerinden yapılır: satın alma düğmesine basın, ödeme tamamlandıktan sonra paketiniz manuel olarak etkinleştirilir.',
     logoutBtn: 'Çıkış',
     footerContact: 'Bize Ulaşın',
     footerPrivacy: 'Gizlilik Politikası',
@@ -209,7 +209,7 @@ export const translations = {
     contentWarning:
       'The link content could not be fetched, so the summary is based on the title only — it may be incomplete.',
     paymentUnavailable:
-      'Payments are not available yet. Buying and subscribing are currently disabled.',
+      'Payment is currently via WhatsApp or Telegram: press the buy button and your plan will be activated manually after payment.',
     logoutBtn: 'Logout',
     footerContact: 'Contact Us',
     footerPrivacy: 'Privacy Policy',

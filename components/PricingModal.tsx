@@ -11,10 +11,17 @@ interface PricingModalProps {
   onClose: () => void;
 }
 
-// I9: the buy/subscribe buttons used to show an alert pretending a payment
-// gateway was "coming soon". No payment gateway is implemented, so the
-// buttons are disabled and say so clearly instead of advertising a feature
-// that does not exist.
+// I9 (2026-11-26): no payment gateway yet (Stripe/PayPal do not serve
+// businesses registered in Türkiye). Buying is manual: each plan has a
+// WhatsApp button (wa.me link with a prefilled message) and a Telegram
+// button (t.me/+<phone> opens a direct chat with the owner — NOT the
+// link bot, whose webhook only handles /start tokens and link saves, so a
+// buyer's message to the bot would never reach the owner). The owner
+// activates the plan manually after payment.
+const WHATSAPP_NUMBER = '905362515878';
+const TELEGRAM_CHAT_URL = 'https://t.me/+905362515878';
+const waLink = (message: string) =>
+  `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`;
 export default function PricingModal({ credits, planType, lang, onClose }: PricingModalProps) {
   const t = translations[lang];
   const tr = (ar: string, trText: string, en: string) =>
@@ -82,13 +89,30 @@ export default function PricingModal({ credits, planType, lang, onClose }: Prici
                 <li>✓ {tr('بدون التزام باشتراك شهري', 'Aylık abonelik zorunluluğu yok', 'No monthly subscription commitment')}</li>
               </ul>
             </div>
-            <button
-              disabled
-              title={t.paymentUnavailable}
-              className="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white font-bold py-2.5 rounded-xl text-sm transition cursor-not-allowed opacity-50"
-            >
-              {tr('شراء 50 شرحاً ($5)', '50 Özet Satın Al ($5)', 'Buy 50 Credits ($5)')}
-            </button>
+            <div className="space-y-2">
+              <a
+                href={waLink(
+                  tr(
+                    'مرحباً، أريد شراء باقة الطلاب (50 شرحاً - $5) في LinkMind',
+                    'Merhaba, LinkMind Öğrenci Paketi (50 özet - $5) satın almak istiyorum',
+                    'Hello, I want to buy the LinkMind Student Pack (50 summaries - $5)'
+                  )
+                )}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full text-center bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white font-bold py-2.5 rounded-xl text-sm transition hover:opacity-90 cursor-pointer"
+              >
+                {tr('شراء عبر واتساب ($5)', 'WhatsApp ile Satın Al ($5)', 'Buy via WhatsApp ($5)')}
+              </a>
+              <a
+                href={TELEGRAM_CHAT_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full text-center bg-transparent border border-purple-400/50 text-purple-100 font-bold py-2.5 rounded-xl text-sm transition hover:bg-purple-500/10 cursor-pointer"
+              >
+                {tr('شراء عبر تيليجرام ($5)', 'Telegram ile Satın Al ($5)', 'Buy via Telegram ($5)')}
+              </a>
+            </div>
           </div>
 
           {/* باقة صناع المحتوى والمدربين الذهبية */}
@@ -119,13 +143,30 @@ export default function PricingModal({ credits, planType, lang, onClose }: Prici
                 <li>✓ {tr('ربط بوت تيليجرام للحفظ الفوري', 'Anında kaydetme için Telegram botu bağlantısı', 'Telegram bot link for instant saving')}</li>
               </ul>
             </div>
-            <button
-              disabled
-              title={t.paymentUnavailable}
-              className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 text-[#180a2e] font-extrabold py-2.5 rounded-xl text-sm transition cursor-not-allowed opacity-50"
-            >
-              {tr('اشترك الآن ($12/شهر)', 'Şimdi Abone Ol ($12/ay)', 'Subscribe ($12/mo)')}
-            </button>
+            <div className="space-y-2">
+              <a
+                href={waLink(
+                  tr(
+                    'مرحباً، أريد الاشتراك في باقة صناع المحتوى والمدربين ($12/شهر) في LinkMind',
+                    'Merhaba, LinkMind İçerik Üreticileri ve Eğitmenler paketine abone olmak istiyorum ($12/ay)',
+                    'Hello, I want to subscribe to the LinkMind Creators & Coaches plan ($12/month)'
+                  )
+                )}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full text-center bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 text-[#180a2e] font-extrabold py-2.5 rounded-xl text-sm transition hover:opacity-90 cursor-pointer"
+              >
+                {tr('اشترك عبر واتساب ($12/شهر)', 'WhatsApp ile Abone Ol ($12/ay)', 'Subscribe via WhatsApp ($12/mo)')}
+              </a>
+              <a
+                href={TELEGRAM_CHAT_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full text-center bg-transparent border border-amber-400/50 text-amber-200 font-extrabold py-2.5 rounded-xl text-sm transition hover:bg-amber-400/10 cursor-pointer"
+              >
+                {tr('اشترك عبر تيليجرام ($12/شهر)', 'Telegram ile Abone Ol ($12/ay)', 'Subscribe via Telegram ($12/mo)')}
+              </a>
+            </div>
           </div>
         </div>
       </div>
