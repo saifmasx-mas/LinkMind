@@ -27,6 +27,8 @@ import {
   buildPurchaseHandoffReply,
   buildSupportFallbackReply,
   buildSupportPrompt,
+  buildAiUnavailableReply,
+  isQuestionAboutLink,
 } from '@/lib/support-knowledge';
 
 export const runtime = 'nodejs';
@@ -263,20 +265,31 @@ export async function POST(request: Request) {
     const candidateUrl = urlMatch?.[0].replace(/[),.!?]+$/, '');
     const url = candidateUrl ? isValidHttpUrl(candidateUrl) : null;
 
-    if (!url) {
-      // Purchase decision: the bot never handles payment. Tell the buyer
-      // the owner will contact them personally, notify the owner
+    // H3 (audit #2): purchase intent and questions are decided BEFORE
+    // the save path, even when the message contains a link. A buyer
+    // who sends a link with "I want to buy the plan" must reach the
+    // owner, not save the link; a question about a link ("what is
+    // this link?") gets answered from the knowledge base, not saved.
+    // Only a bare link (or a link plus a save command) reaches the
+    // save path below.
+    if (detectPurchaseIntent(text)) {
+      // Purchase decision: the bot never handles payment. Tell the
+      // buyer the owner will contact them personally, notify the owner
       // (best-effort), and give the WhatsApp link as a direct channel.
-      if (detectPurchaseIntent(text)) {
-        await notifyAdminOfPurchaseIntent(admin, text, chatId, botToken);
-        await sendTelegramMessage(
-          chatId,
-          buildPurchaseHandoffReply(detectSupportLanguage(text)),
-          botToken
-        );
-        return NextResponse.json({ ok: true });
-      }
+      await notifyAdminOfPurchaseIntent(admin, text, chatId, botToken);
+      await sendTelegramMessage(
+        chatId,
+        buildPurchaseHandoffReply(detectSupportLanguage(text)),
+        botToken
+      );
+      return NextResponse.json({ ok: true });
+    }
+    if (url && isQuestionAboutLink(text, url.toString())) {
+      await sendTelegramMessage(chatId, await answerSupportQuestion(text), botToken);
+      return NextResponse.json({ ok: true });
+    }
 
+    if (!url) {
       // Any other question: answer from the LinkMind knowledge base.
       await sendTelegramMessage(chatId, await answerSupportQuestion(text), botToken);
       return NextResponse.json({ ok: true });
@@ -529,45 +542,71 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
+    // C2 (audit #2): without a working Gemini call there is no summary
+    // to charge for — the web path returns 503 AI_UNAVAILABLE with no
+    // save and no credit. The bot mirrors it: an honest apology, no
+    // save, no credit. The old code skipped Gemini when the key was
+    // missing (and only logged a failure), then saved a fallback
+    // "Saved via Telegram Bot" summary and charged a credit for a
+    // summary Gemini never wrote.
     const aiKey = process.env.GEMINI_API_KEY?.trim();
+    if (!aiKey) {
+      await sendTelegramMessage(
+        chatId,
+        buildAiUnavailableReply(detectSupportLanguage(text)),
+        botToken
+      );
+      return NextResponse.json({ ok: true });
+    }
+
+    const ai = new GoogleGenAI({ apiKey: aiKey });
     let finalTitle = (rawTitle || canonicalUrl.toString()).trim().slice(0, 200);
     let finalSummary = (rawDescription || 'Saved via Telegram Bot').trim().slice(0, 500);
     let finalCategory = 'General';
     let embedding: number[] | null = null;
 
-    if (aiKey) {
-      try {
-        const ai = new GoogleGenAI({ apiKey: aiKey });
-        const aiResponse = await generateContentWithFallback(ai, {
-          contents: `Summarize this link in Arabic in 2 concise sentences and classify it into ONLY one of: "Programming", "Learning", "Business", "General".\nTitle: ${finalTitle}\nDesc: ${rawDescription}\nContent: ${bodyText.slice(0, 14000)}\nURL: ${canonicalUrl.toString()}`,
-          config: {
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                summary: { type: Type.STRING },
-                category: { type: Type.STRING },
-              },
-              required: ['title', 'summary', 'category'],
+    try {
+      const aiResponse = await generateContentWithFallback(ai, {
+        contents: `Summarize this link in Arabic in 2 concise sentences and classify it into ONLY one of: "Programming", "Learning", "Business", "General".\nTitle: ${finalTitle}\nDesc: ${rawDescription}\nContent: ${bodyText.slice(0, 14000)}\nURL: ${canonicalUrl.toString()}`,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              summary: { type: Type.STRING },
+              category: { type: Type.STRING },
             },
+            required: ['title', 'summary', 'category'],
           },
-        });
-        const parsed = JSON.parse(aiResponse.text || '{}');
-        finalTitle = String(parsed.title || finalTitle).slice(0, 200);
-        finalSummary = String(parsed.summary || finalSummary).slice(0, 500);
-        if (['Programming', 'Learning', 'Business', 'General'].includes(parsed.category)) {
-          finalCategory = parsed.category;
-        }
-
-        const embeddingResponse = await ai.models.embedContent({
-          model: 'text-embedding-004',
-          contents: `${finalTitle}. ${finalSummary}`,
-        });
-        embedding = embeddingResponse.embeddings?.[0]?.values || null;
-      } catch (error) {
-        console.error('Telegram link analysis failed:', error);
+        },
+      });
+      const parsed = JSON.parse(aiResponse.text || '{}');
+      finalTitle = String(parsed.title || finalTitle).slice(0, 200);
+      finalSummary = String(parsed.summary || finalSummary).slice(0, 500);
+      if (['Programming', 'Learning', 'Business', 'General'].includes(parsed.category)) {
+        finalCategory = parsed.category;
       }
+    } catch (error) {
+      console.error('Telegram link analysis failed:', error);
+      await sendTelegramMessage(
+        chatId,
+        buildAiUnavailableReply(detectSupportLanguage(text)),
+        botToken
+      );
+      return NextResponse.json({ ok: true });
+    }
+
+    // An embedding is optional (like the web path): a failed embedding
+    // must not fail the save.
+    try {
+      const embeddingResponse = await ai.models.embedContent({
+        model: 'text-embedding-004',
+        contents: `${finalTitle}. ${finalSummary}`,
+      });
+      embedding = embeddingResponse.embeddings?.[0]?.values || null;
+    } catch {
+      embedding = null;
     }
 
     const { error: insertError } = await admin.from('bookmarks').insert({

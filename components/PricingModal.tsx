@@ -85,7 +85,7 @@ export default function PricingModal({ credits, planType, lang, onClose }: Prici
               </p>
               <ul className="space-y-2 text-xs text-purple-100/90 mb-6">
                 <li>✓ {tr('تحويل 50 فيديو يوتيوب أو كتاب PDF إلى خطوات', '50 YouTube videosu veya PDF kitabı adıma dönüştürme', 'Turn 50 YouTube videos or PDF books into steps')}</li>
-                <li>✓ {tr('تصدير مباشر إلى Notion و PDF', 'Notion ve PDF’ye doğrudan dışa aktarma', 'Direct export to Notion and PDF')}</li>
+                <li>✓ {tr('نسخ Markdown جاهز لـ Notion وتصدير PDF', 'Notion için hazır Markdown kopyalama ve PDF dışa aktarma', 'Copy Markdown ready for Notion and PDF export')}</li>
                 <li>✓ {tr('بدون التزام باشتراك شهري', 'Aylık abonelik zorunluluğu yok', 'No monthly subscription commitment')}</li>
               </ul>
             </div>
@@ -139,7 +139,7 @@ export default function PricingModal({ credits, planType, lang, onClose }: Prici
               </p>
               <ul className="space-y-2 text-xs text-purple-100/90 mb-6">
                 <li>✓ {tr('تحويل عدد غير محدود من الشروحات والكتب شهرياً', 'Ayda sınırsız özet ve kitap dönüştürme', 'Unlimited summaries and books every month')}</li>
-                <li>✓ {tr('تصدير احترافي PDF و Notion جاهز للتوزيع', 'Dağıtıma hazır profesyonel PDF ve Notion dışa aktarma', 'Professional PDF & Notion export ready to share')}</li>
+                <li>✓ {tr('نسخ Markdown احترافي جاهز لـ Notion وتصدير PDF', 'Notion için hazır profesyonel Markdown kopyalama ve PDF dışa aktarma', 'Professional Markdown copy ready for Notion and PDF export')}</li>
                 <li>✓ {tr('ربط بوت تيليجرام للحفظ الفوري', 'Anında kaydetme için Telegram botu bağlantısı', 'Telegram bot link for instant saving')}</li>
               </ul>
             </div>

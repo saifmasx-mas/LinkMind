@@ -29,6 +29,14 @@ export function shouldUseFullSummary(opts: {
 // saving a misleading summary; the route turns this into 503 with no
 // credit deducted. JSON preserves string length exactly, so a 5%
 // tolerance is generous.
+//
+// C1 (audit #2, 2026-11-27): the claimed length must be capped at
+// MAX_BOOK_TEXT_CHARS before calling this — the text is sliced to
+// that cap before sending, so a 250,000-char book legitimately
+// arrives as 200,000 chars. Comparing the received 200,000 against
+// the uncapped 250,000 would reject every long book, always. The
+// route applies the cap; the browser also sends the post-slice
+// length, so both sides agree.
 export function isTruncatedBookText(receivedChars: number, claimedChars: number): boolean {
   if (claimedChars <= 0) return false;
   return receivedChars < claimedChars * 0.95;

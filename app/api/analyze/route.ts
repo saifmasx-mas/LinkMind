@@ -520,11 +520,21 @@ export async function POST(req: Request) {
     // checklist items, from a 135,000-character book). Refuse loudly
     // with a dedicated error instead of saving a misleading summary;
     // no credit is deducted. The frontend shows the matching notice.
+    //
+    // C1 (audit #2): the claimed length is capped at
+    // MAX_BOOK_TEXT_CHARS before comparing — the text is sliced to
+    // that cap before sending, so a 250,000-char book legitimately
+    // arrives as 200,000 chars. Comparing the received 200,000
+    // against the uncapped 250,000 rejected every long book, always.
+    // (The browser also sends the post-slice length now; the cap
+    // here also protects older cached frontends that send the full
+    // length.)
     if (isBookOrDoc && bookText && typeof bookTextLength === 'number') {
       const receivedChars = bodyContent.length;
-      if (isTruncatedBookText(receivedChars, bookTextLength)) {
+      const claimedChars = Math.min(bookTextLength, MAX_BOOK_TEXT_CHARS);
+      if (isTruncatedBookText(receivedChars, claimedChars)) {
         console.error(
-          `[analyze] book text truncated in transit: claimed=${bookTextLength} received=${receivedChars}`
+          `[analyze] book text truncated in transit: claimed=${claimedChars} received=${receivedChars}`
         );
         return NextResponse.json(
           {
@@ -775,11 +785,62 @@ URL: ${finalUrl}`;
       finalSummary = appendBookChapters(finalSummary, fullBookResult.chapters);
     }
 
-    // Deduct only after a successful AI analysis (see C7 above).
+    // H4 (audit #2): the bookmark row is inserted HERE, server-side,
+    // BEFORE the credit is deducted. The browser used to insert it
+    // after the response arrived, so a failed browser insert (network
+    // / permissions) lost the credit with no card saved. Insert first,
+    // deduct second: if the deduct then fails (the balance hit 0 in a
+    // race), the row is removed again, so no card exists without
+    // payment and no credit is spent without a card.
+    let bookmarkId: string | null = null;
+    if (!isBookOrDoc) {
+      // Double-submit guard: a second request for the same link that
+      // arrives while the first is still being analysed must not save
+      // (or charge) twice. The pre-analysis check above cannot catch
+      // it — the first request had not inserted anything yet.
+      const { data: justSaved } = await admin
+        .from('bookmarks')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('url', finalUrl)
+        .maybeSingle();
+      if (justSaved) {
+        return NextResponse.json(
+          { error: 'DUPLICATE_LINK', remainingCredits: currentCredits },
+          { status: 409 }
+        );
+      }
+    }
+    const { data: insertedBookmark, error: insertError } = await admin
+      .from('bookmarks')
+      .insert({
+        user_id: userId,
+        url: finalUrl,
+        title: finalTitle,
+        summary: finalSummary,
+        category: finalCategory,
+        image_url: image,
+        checklist: finalChecklist,
+        embedding: embedding.length > 0 ? embedding : null,
+      })
+      .select('id')
+      .single();
+    if (insertError || !insertedBookmark) {
+      console.error('Failed to save bookmark:', insertError?.message);
+      return NextResponse.json({ error: 'Could not save bookmark' }, { status: 500 });
+    }
+    bookmarkId = insertedBookmark.id;
+
+    // Deduct only after a successful AI analysis (see C7 above) AND a
+    // saved bookmark row — no credit is spent without a card.
     let updatedCredits = currentCredits;
     if (!isPro) {
       const newCredits = await deductCredit(admin, userId, currentCredits);
       if (newCredits === null) {
+        // The balance hit 0 between the check and the deduct: remove
+        // the row again so the user keeps no card for a request that
+        // could not be paid for.
+        await admin.from('bookmarks').delete().eq('id', bookmarkId);
         return NextResponse.json(
           { error: 'OUT_OF_CREDITS', remainingCredits: 0 },
           { status: 402 }
@@ -799,6 +860,7 @@ URL: ${finalUrl}`;
       contentWarning,
       remainingCredits: updatedCredits,
       planType: profile?.plan_type || 'free',
+      bookmarkId,
     });
   } catch (err: any) {
     // SECURITY (2026-11-24 audit): never return the raw error message to

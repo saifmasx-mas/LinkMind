@@ -138,7 +138,7 @@ export default function PresentationPage() {
 
         <Section icon={Sparkles} title="3 — الميزات">
           <ul className="space-y-3 list-none">
-            <Item icon={Globe} title="مصادر متعددة" text="YouTube و Facebook و TikTok و X و Instagram والمقالات والمدونات وملفات PDF و Word." />
+            <Item icon={Globe} title="مصادر متعددة" text="YouTube و TikTok و X والمقالات والمدونات وملفات PDF و Word. روابط Facebook و Instagram تُقبل لكن محتواها محمي غالباً." />
             <Item icon={FileText} title="ملخصات شاملة" text="الكتب والمقالات الطويلة تُلخَّص قسماً بقسم ثم تُدمج في ملخص واحد كامل." />
             <Item icon={Bot} title="بوت تيليجرام" text="حفظ الروابط من تيليجرام، ووكيل دعم يجيب عن أسئلة العملاء ويحوّل نية الشراء إلى صاحب الموقع." />
             <Item icon={Bell} title="إشعارات المسؤول" text="إشعار فوري عند كل تسجيل جديد، وصفحة «المشتركون الجدد» للمسؤول فقط." />
@@ -181,7 +181,7 @@ export default function PresentationPage() {
 
         <Section icon={Trophy} title="7 — ملخص ما تم إنجازه">
           <ul className="space-y-3 list-none">
-            <Item icon={CheckCircle2} title="الموقع مكتمل ويعمل حياً" text="على link-mind-bay.vercel.app، مع 19 طلب سحب مدموجة: إصلاحات أمان، وملخصات شاملة، وبوت تيليجرام، ووكيل دعم، وإصلاحات تصنيف." />
+            <Item icon={CheckCircle2} title="الموقع مكتمل ويعمل حياً" text="على link-mind-bay.vercel.app، مع 25 طلب سحب مدموجة: إصلاحات أمان، وملخصات شاملة، وبوت تيليجرام، ووكيل دعم، وإصلاحات تصنيف." />
             <Item icon={Info} title="حدود معروفة بصدق" text="روابط LinkedIn لا يمكن تلخيص محتواها (جدار تسجيل دخول)؛ وملخصات الفيديو من العنوان والوصف وليست نصاً منطوقاً كاملاً؛ ولا يوجد تطبيق جوال بعد." />
           </ul>
         </Section>

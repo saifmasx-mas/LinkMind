@@ -21,11 +21,7 @@ import TurnstileWidget, {
   TurnstileWidgetHandle,
 } from '@/components/TurnstileWidget';
 import {
-  FacebookIcon,
-  InstagramIcon,
-  TelegramIcon,
   WhatsAppIcon,
-  XIcon,
 } from '@/components/SocialIcons';
 import {
   Plus,
@@ -653,39 +649,22 @@ export default function Home() {
       }
 
       if (res.ok) {
-        // LINKEDIN SHORT LINKS (2026-11-26): store the URL the server
-        // returns, not the raw pasted text — the server resolves short
-        // links (lnkd.in -> linkedin.com) before the duplicate check, so
-        // the saved row carries the canonical URL the library classifies
-        // correctly. The book flow below already stores data.url.
-        const { error: dbError } = await supabase.from('bookmarks').insert({
-          user_id: user.id,
-          url: data.url || urlInput.trim(),
-          title: data.title,
-          summary: data.summary,
-          category: data.category,
-          image_url: data.image_url,
-          checklist: data.checklist || [],
-          embedding: data.embedding && data.embedding.length > 0 ? data.embedding : null,
-        });
-
-        if (!dbError) {
-          if (typeof data.remainingCredits === 'number') {
-            setCredits(data.remainingCredits);
-          }
-          // I7: the page/transcript could not be fetched, so the summary is
-          // based on the title alone — say so instead of failing silently.
-          // A successful save with no warning of its own clears any
-          // stale notice (e.g. an old "scanned book" warning from a
-          // previous failed upload) so it is not misread as describing
-          // the item that has just been saved.
-          setNotice(noticeAfterSave(!!data.contentWarning, t.contentWarning));
-          await fetchBookmarks();
-          setUrlInput('');
-        } else {
-          console.error('Failed to save bookmark:', dbError.message);
-          setNotice(genericSaveError());
+        // H4 (audit #2): the bookmark row is now inserted server-side
+        // in /api/analyze — the browser only refreshes the library.
+        // The old browser insert could fail AFTER the server had
+        // deducted the credit, losing the credit with no card saved.
+        if (typeof data.remainingCredits === 'number') {
+          setCredits(data.remainingCredits);
         }
+        // I7: the page/transcript could not be fetched, so the summary is
+        // based on the title alone — say so instead of failing silently.
+        // A successful save with no warning of its own clears any
+        // stale notice (e.g. an old "scanned book" warning from a
+        // previous failed upload) so it is not misread as describing
+        // the item that has just been saved.
+        setNotice(noticeAfterSave(!!data.contentWarning, t.contentWarning));
+        await fetchBookmarks();
+        setUrlInput('');
       } else {
         setNotice(data.error || (lang === 'ar' ? 'تأكد من صحة الرابط!' : 'Please enter a valid URL!'));
       }
@@ -777,7 +756,11 @@ export default function Home() {
         const pdfPath = decidePdfBookPath(extractedText.length, file.size);
         if (pdfPath === 'text') {
           payload.bookText = extractedText.slice(0, MAX_BOOK_TEXT_CHARS);
-          payload.bookTextLength = extractedText.length;
+          // C1 (audit #2): send the length AFTER the 200k cap, not the
+          // full length — the server compares what it received with
+          // this number, and a book longer than the cap would otherwise
+          // be rejected as "truncated" on every attempt.
+          payload.bookTextLength = payload.bookText.length;
           payload.bookType = 'pdf';
         } else if (pdfPath === 'scanned-small') {
           // 2. إذا كان PDF مصوراً (Scan) وحجمه مناسب نرسله كـ Base64
@@ -812,7 +795,9 @@ export default function Home() {
         // text it received with this length and refuses (503, no credit)
         // if the book was cut in transit — the live «اللغة الشاعرة»
         // upload was summarised from the beginning of the book only.
-        payload.bookTextLength = text.length;
+        // C1 (audit #2): the length AFTER the 200k cap, so a book
+        // longer than the cap is not rejected as "truncated".
+        payload.bookTextLength = payload.bookText.length;
         payload.bookType = 'word';
       } else {
         const text = (await file.text())
@@ -824,7 +809,8 @@ export default function Home() {
           return;
         }
         payload.bookText = text.slice(0, MAX_BOOK_TEXT_CHARS);
-        payload.bookTextLength = text.length;
+        // C1 (audit #2): the length AFTER the 200k cap (see above).
+        payload.bookTextLength = payload.bookText.length;
         payload.bookType = 'word';
       }
 
@@ -861,31 +847,17 @@ export default function Home() {
       }
 
       if (res.ok) {
-        const { error: dbError } = await supabase.from('bookmarks').insert({
-          user_id: user.id,
-          url: data.url,
-          title: data.title,
-          summary: data.summary,
-          category: data.category,
-          image_url: data.image_url || '',
-          checklist: data.checklist || [],
-          embedding: data.embedding && data.embedding.length > 0 ? data.embedding : null,
-        });
-
-        if (!dbError) {
-          if (typeof data.remainingCredits === 'number') {
-            setCredits(data.remainingCredits);
-          }
-          // A successful save with no warning of its own clears any
-          // stale notice (see the link-save path above) so an old
-          // "scanned book" warning is not misread as describing the
-          // book that has just been saved.
-          setNotice(noticeAfterSave(!!data.contentWarning, t.contentWarning));
-          await fetchBookmarks();
-        } else {
-          console.error('Failed to save book:', dbError.message);
-          setNotice(genericSaveError());
+        // H4 (audit #2): the bookmark row is now inserted server-side
+        // in /api/analyze — see the link-save path above.
+        if (typeof data.remainingCredits === 'number') {
+          setCredits(data.remainingCredits);
         }
+        // A successful save with no warning of its own clears any
+        // stale notice (see the link-save path above) so an old
+        // "scanned book" warning is not misread as describing the
+        // book that has just been saved.
+        setNotice(noticeAfterSave(!!data.contentWarning, t.contentWarning));
+        await fetchBookmarks();
       } else {
         setNotice(data.error || (lang === 'ar' ? 'حدث خطأ أثناء تحليل الكتاب' : 'Failed to analyze book'));
       }
@@ -1895,14 +1867,13 @@ export default function Home() {
             </a>
           </div>
 
-          {/* روابط التواصل مؤقتة للصفحات الرئيسية للمنصات — تُستبدل بروابط حسابات LinkMind الرسمية عندما تتوفر */}
+          {/* M8 (audit #2): only WhatsApp links to a real LinkMind
+          contact — the X/Facebook/Instagram/Telegram icons pointed
+          at the platforms' homepages, so they are hidden until real
+          official accounts exist. */}
           <div className="flex items-center gap-3">
             <span className="text-xs text-purple-200/60">{t.footerFollow}</span>
             {[
-              { href: 'https://x.com', label: 'X', Icon: XIcon },
-              { href: 'https://www.facebook.com', label: 'Facebook', Icon: FacebookIcon },
-              { href: 'https://www.instagram.com', label: 'Instagram', Icon: InstagramIcon },
-              { href: 'https://t.me', label: 'Telegram', Icon: TelegramIcon },
               { href: 'https://wa.me/905362515878', label: 'WhatsApp', Icon: WhatsAppIcon },
             ].map(({ href, label, Icon }) => (
               <a
