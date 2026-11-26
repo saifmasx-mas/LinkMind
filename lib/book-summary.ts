@@ -1,5 +1,38 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { generateContentWithFallback } from './gemini';
+import type { BookChapterData, BookIdea } from './book-reader';
+
+// Route decision, extracted so the smoke test can prove it (see
+// scripts/smoke-book-summary.mjs): EVERY book upload (PDF or Word,
+// extracted text or scanned file read by Gemini) and every long
+// article takes the full chapter-by-chapter path. Videos, short
+// social posts and thin pages keep the single-call short summary.
+// `bodyContentLength` is the length of the real text the fetch /
+// extraction stage brought back; 0 means "no text at all" (e.g. a
+// scanned PDF sent as base64, which Gemini reads itself).
+export function shouldUseFullSummary(opts: {
+  isBookOrDoc: boolean;
+  isFullArticle: boolean;
+  bodyContentLength: number;
+}): boolean {
+  return (opts.isBookOrDoc || opts.isFullArticle) && opts.bodyContentLength > 0;
+}
+
+// Length-integrity guard (live-incident fix, 2026-11-27): the
+// frontend sends the length of the text it actually put in the
+// request (`bookTextLength`). If the server receives materially less,
+// the text was cut somewhere between the browser and the server —
+// summarising the fragment would silently produce a short "full"
+// summary of the beginning of the book only (exactly what happened
+// live to «اللغة الشاعرة»: one generic section, 8 ideas, 2 checklist
+// items, from a 135,000-character book). Refuse loudly instead of
+// saving a misleading summary; the route turns this into 503 with no
+// credit deducted. JSON preserves string length exactly, so a 5%
+// tolerance is generous.
+export function isTruncatedBookText(receivedChars: number, claimedChars: number): boolean {
+  if (claimedChars <= 0) return false;
+  return receivedChars < claimedChars * 0.95;
+}
 
 // FULL-BOOK SUMMARY (2026-11-26): when a book/article is uploaded, the
 // site used to send only the first ~14,000 characters to Gemini with a
@@ -20,11 +53,17 @@ import { generateContentWithFallback } from './gemini';
 //    markers, then to even size-based sections.
 // 2. summarizeBookFull() summarises every chapter with Gemini IN
 //    PARALLEL (one call per chapter, each with the usual model fallback
-//    chain from lib/gemini.ts), then joins the per-chapter results into a
-//    single plain-text summary with one block per chapter.
-// 3. The route saves that combined text as the bookmark summary, and
-//    the per-chapter key ideas (up to 2 per chapter) become the checklist
-//    the card already shows in a scrollable list.
+//    chain from lib/gemini.ts), then joins the per-chapter results into
+//    a single plain-text summary with one block per chapter. Every idea
+//    also carries a "detail" paragraph (2-4 sentences from the chapter
+//    text), and the structured chapters are returned alongside the
+//    plain text so the reader view and the PDF download can open every
+//    chapter and every idea.
+// 3. The route saves that combined text as the bookmark summary, with
+//    the structured chapters appended in the storage envelope (see
+//    lib/book-reader.ts), and the per-chapter key ideas (up to 2 per
+//    chapter) become the checklist the card already shows in a
+//    scrollable list.
 //
 // Time budget (same rules as PR #5 / PR #6): the chapter calls run in
 // parallel, so the wall clock is the slowest call, not the sum. The
@@ -98,7 +137,12 @@ function looksLikeHeading(line: string, nextLine: string | undefined): boolean {
   // by a long paragraph — the shape of a real book heading (e.g. the
   // chapter titles of «اللغة الشاعرة»: "لغة التعبير"، "الشعر ديوان العرب").
   // The "long next line" guard keeps short verse lines in poetry books
-  // from being mistaken for headings.
+  // from being mistaken for headings. (Tried measuring the next 3 lines
+  // combined instead — it promoted verse lines and subsection headings
+  // to chapters in the Word file and crowded out real chapters, so the
+  // single-line guard stays. Narrow-layout PDFs therefore split into
+  // generic size sections with full coverage instead of real titles —
+  // see the smoke test section 18 note.)
   if (
     t.length <= 45 &&
     !/[.!؟:؛]$/.test(t) &&
@@ -123,9 +167,17 @@ function mergeTinyChapters(chapters: BookChapter[]): BookChapter[] {
   for (const chapter of chapters) {
     const last = merged[merged.length - 1];
     if (last && last.text.length < MIN_CHAPTER_CHARS) {
-      // A tiny chapter (e.g. a one-paragraph introduction) joins the
-      // next chapter instead of spending a whole Gemini call on it.
-      last.text = `${last.text}\n${chapter.text}`.trim();
+      // The previous chapter is tiny (e.g. front matter before the
+      // first real heading): it joins the NEXT chapter and the next
+      // chapter's title wins. The old code did the opposite — it
+      // appended the next chapter's text to the tiny one, so a 44-char
+      // generic "القسم 1" front-matter piece swallowed an entire
+      // 140,000-char PDF book, and the summary covered only its
+      // beginning (the chapter was then truncated to 30,000 chars).
+      merged[merged.length - 1] = {
+        title: chapter.title,
+        text: `${last.text}\n${chapter.text}`.trim(),
+      };
     } else if (chapter.text.length < MIN_CHAPTER_CHARS && merged.length > 0) {
       const prev = merged[merged.length - 1];
       prev.text = `${prev.text}\n${chapter.text}`.trim();
@@ -240,7 +292,18 @@ function splitIntoSizeSections(text: string, lang: string): BookChapter[] {
 }
 
 export function splitBookIntoChapters(text: string, lang: string): BookChapter[] {
-  const clean = text.replace(/\r\n?/g, '\n').replace(/[ \t\u00a0]+/g, ' ').trim();
+  // NFKC first: Arabic PDFs often store their text in presentation
+  // forms (shaped glyphs, e.g. ﺍﻟﻠﻐﺔ instead of اللغة), which the
+  // heading regexes below cannot match — normalising turns them back
+  // into standard letters, so a PDF book splits on its real headings
+  // instead of falling back to generic size sections. It is a no-op
+  // for Word text (mammoth already returns standard letters), and
+  // the normalised text is also what Gemini receives (better input).
+  const clean = text
+    .normalize('NFKC')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t\u00a0]+/g, ' ')
+    .trim();
   if (!clean) return [];
 
   // 1) Line-based headings (Word files keep paragraph breaks).
@@ -283,14 +346,24 @@ export function splitBookIntoChapters(text: string, lang: string): BookChapter[]
     }
   }
   flush();
+  // A split only counts if it still leaves at least 2 chapters after
+  // merging: when the line-based pass finds a single real heading
+  // (e.g. a PDF book whose pages join into one long line each, with
+  // only the title page as a "heading"), merging collapses everything
+  // into one giant chapter — and that chapter is then truncated to
+  // 30,000 chars, so the summary covers only the beginning of the
+  // book. Fall through to the size-section fallback instead, so the
+  // whole book is covered.
   if (chapters.length >= 2) {
-    return finalizeChapters(chapters);
+    const finalized = finalizeChapters(chapters);
+    if (finalized.length >= 2) return finalized;
   }
 
   // 2) Inline "الفصل X" markers (flat PDF text).
   const inline = splitOnInlineMarkers(clean);
   if (inline && inline.length >= 2) {
-    return finalizeChapters(inline);
+    const finalized = finalizeChapters(inline);
+    if (finalized.length >= 2) return finalized;
   }
 
   // 3) No headings at all: even sections, so the whole book is still
@@ -300,7 +373,7 @@ export function splitBookIntoChapters(text: string, lang: string): BookChapter[]
 
 interface ChapterSummary {
   title: string;
-  ideas: string[];
+  ideas: BookIdea[];
 }
 
 async function summarizeChapter(
@@ -319,8 +392,10 @@ async function summarizeChapter(
   const response = await generateContentWithFallback(ai, {
     contents: `Summarize ONLY this ${kind === 'article' ? 'section of an article' : 'chapter/section of a book'}. Extract:
 1. The ${kind === 'article' ? 'section' : 'chapter'} title (use the heading provided below; clean it up if needed).
-2. ALL main ideas of this ${kind === 'article' ? 'section' : 'chapter'}: every key idea, argument, example and conclusion — ${MAX_IDEAS_PER_CHAPTER} bullet points at most, each 1-2 sentences. Do NOT leave out any main idea: this is a comprehensive summary, not a short overview.
-3. Do NOT invent ideas that are not in the text below. Do NOT add content from other ${kind === 'article' ? 'sections' : 'chapters'}.
+2. ALL main ideas of this ${kind === 'article' ? 'section' : 'chapter'}: every key idea, argument, example and conclusion — ${MAX_IDEAS_PER_CHAPTER} ideas at most. For EACH idea give two fields:
+   - "text": the idea itself in 1-2 sentences.
+   - "detail": a detailed explanation of this idea in 2-4 sentences, drawn ONLY from the ${kind === 'article' ? 'section' : 'chapter'} text below (the author's examples, evidence and steps). This detail is what the reader sees when they open the idea, so it must stand on its own.
+3. Do NOT invent ideas or details that are not in the text below. Do NOT add content from other ${kind === 'article' ? 'sections' : 'chapters'}.
 
 ${langInstruction}
 
@@ -332,7 +407,17 @@ ${kind === 'article' ? 'Section' : 'Chapter'} text: ${chapter.text}`,
         type: Type.OBJECT,
         properties: {
           title: { type: Type.STRING },
-          ideas: { type: Type.ARRAY, items: { type: Type.STRING } },
+          ideas: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                text: { type: Type.STRING },
+                detail: { type: Type.STRING },
+              },
+              required: ['text', 'detail'],
+            },
+          },
         },
         required: ['title', 'ideas'],
       },
@@ -340,9 +425,7 @@ ${kind === 'article' ? 'Section' : 'Chapter'} text: ${chapter.text}`,
   });
 
   const parsed = JSON.parse(response.text || '{}');
-  const ideas = Array.isArray(parsed.ideas)
-    ? parsed.ideas.map((idea: unknown) => String(idea).trim()).filter(Boolean)
-    : [];
+  const ideas = toBookIdeas(Array.isArray(parsed.ideas) ? parsed.ideas : []);
   if (ideas.length === 0) {
     throw new Error('Chapter summary came back empty');
   }
@@ -352,10 +435,35 @@ ${kind === 'article' ? 'Section' : 'Chapter'} text: ${chapter.text}`,
   };
 }
 
+// Normalize the model's ideas into {text, detail} pairs. The model
+// sometimes returns a plain string instead of an object for an idea;
+// accept it and use the idea itself as its detail so the reader never
+// opens an empty view. Shared by the per-chapter summariser and the
+// scanned-book summariser below.
+function toBookIdeas(rawIdeas: unknown[]): BookIdea[] {
+  return rawIdeas
+    .map((raw): BookIdea | null => {
+      if (typeof raw === 'string') {
+        const text = raw.trim();
+        return text ? { text, detail: text } : null;
+      }
+      if (raw && typeof raw === 'object') {
+        const text = String((raw as { text?: unknown }).text || '').trim();
+        const detail = String(
+          (raw as { detail?: unknown }).detail || ''
+        ).trim();
+        if (!text) return null;
+        return { text, detail: detail || text };
+      }
+      return null;
+    })
+    .filter((idea): idea is BookIdea => idea !== null);
+}
+
 export async function summarizeBookFull(
   ai: GoogleGenAI,
   opts: { text: string; lang: string; requestStartedAt: number; kind?: 'book' | 'article' }
-): Promise<{ summary: string; checklist: string[] }> {
+): Promise<{ summary: string; checklist: string[]; chapters: BookChapterData[] }> {
   const kind = opts.kind ?? 'book';
   const chapters = splitBookIntoChapters(opts.text, opts.lang);
   if (chapters.length === 0) {
@@ -405,11 +513,14 @@ export async function summarizeBookFull(
   // Plain text with one block per chapter: the library card renders the
   // summary as plain text (whitespace-pre-line in the PDF export), so no
   // Markdown headings — chapter titles on their own lines, ideas as
-  // bullet points underneath.
+  // bullet points underneath. The structured chapters (with each idea's
+  // detail) travel with it in the storage envelope — see
+  // lib/book-reader.ts — so the reader view and the PDF download can
+  // open every chapter and every idea.
   const summary = summaries
     .map(
       (chapter) =>
-        `${chapter.title}\n${chapter.ideas.map((idea) => `• ${idea}`).join('\n')}`
+        `${chapter.title}\n${chapter.ideas.map((idea) => `• ${idea.text}`).join('\n')}`
     )
     .join('\n\n');
 
@@ -419,10 +530,135 @@ export async function summarizeBookFull(
   for (const chapter of summaries) {
     for (const idea of chapter.ideas.slice(0, 2)) {
       if (checklist.length >= MAX_CHECKLIST_ITEMS) break;
-      checklist.push(idea);
+      checklist.push(idea.text);
     }
     if (checklist.length >= MAX_CHECKLIST_ITEMS) break;
   }
 
-  return { summary, checklist };
+  const chapterData: BookChapterData[] = summaries.map((chapter) => ({
+    title: chapter.title,
+    ideas: chapter.ideas,
+  }));
+
+  return { summary, checklist, chapters: chapterData };
+}
+
+// SCANNED BOOK (2026-11-27): a scanned / image PDF has no text layer,
+// so the chapter splitter cannot run on it — the browser sends it to
+// Gemini as base64 instead. Ask Gemini to read the PDF itself and
+// return a structured chapter-by-chapter summary in ONE call, in the
+// same shape as the text path (chapters with ideas + details), so a
+// scanned book gets the same reader view and PDF download as a text
+// book. The output is bounded (10 chapters, 4 ideas each) to stay
+// inside the model's output limit.
+//
+// Returns null (never throws for a bad model answer) when the model
+// answer cannot be used — the route falls back to the short summary
+// for that book, so a scanned book is never worse off than before.
+// An AI outage still throws, like everywhere else, and the route
+// turns it into 503 with no credit deducted.
+export async function summarizeScannedBook(
+  ai: GoogleGenAI,
+  opts: { base64: string; mimeType: string; lang: string }
+): Promise<{ summary: string; checklist: string[]; chapters: BookChapterData[] } | null> {
+  const langInstruction =
+    opts.lang === 'ar'
+      ? 'Write the chapter titles and ideas in clear, eloquent Arabic.'
+      : opts.lang === 'tr'
+        ? 'Write the chapter titles and ideas in clear, natural Turkish.'
+        : 'Write the chapter titles and ideas in clear, natural English.';
+
+  let response;
+  try {
+    response = await generateContentWithFallback(ai, {
+      contents: [
+        {
+          text: `Read this scanned book (a PDF file, attached below) and summarise it chapter by chapter. Extract:
+1. Up to 10 chapters, in the order they appear in the book, with their real titles.
+2. For EACH chapter, up to 4 main ideas. For EACH idea give two fields:
+   - "text": the idea itself in 1-2 sentences.
+   - "detail": a detailed explanation of this idea in 2-3 sentences, drawn ONLY from the book (the author's examples, evidence and steps). This detail is what the reader sees when they open the idea, so it must stand on its own.
+3. Do NOT invent chapters, ideas or details that are not in the book. If a chapter has fewer than 4 main ideas, return only the real ones.
+
+${langInstruction}`,
+        },
+        { inlineData: { mimeType: opts.mimeType, data: opts.base64 } },
+      ],
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            chapters: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  ideas: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        text: { type: Type.STRING },
+                        detail: { type: Type.STRING },
+                      },
+                      required: ['text', 'detail'],
+                    },
+                  },
+                },
+                required: ['title', 'ideas'],
+              },
+            },
+          },
+          required: ['chapters'],
+        },
+      },
+    });
+  } catch (error) {
+    console.warn('Scanned book structured summary failed:', error);
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(response.text || '{}');
+    const rawChapters: unknown[] = Array.isArray(parsed.chapters) ? parsed.chapters : [];
+    const chapters: BookChapterData[] = rawChapters
+      .map((raw): BookChapterData | null => {
+        if (!raw || typeof raw !== 'object') return null;
+        const title = String((raw as { title?: unknown }).title || '').trim();
+        const ideas = toBookIdeas(
+          Array.isArray((raw as { ideas?: unknown }).ideas)
+            ? ((raw as { ideas?: unknown }).ideas as unknown[])
+            : []
+        ).slice(0, MAX_IDEAS_PER_CHAPTER);
+        if (!title || ideas.length === 0) return null;
+        return { title, ideas };
+      })
+      .filter((chapter): chapter is BookChapterData => chapter !== null)
+      .slice(0, 10);
+    if (chapters.length === 0) {
+      console.warn('Scanned book structured summary came back empty');
+      return null;
+    }
+
+    const summary = chapters
+      .map(
+        (chapter) =>
+          `${chapter.title}\n${chapter.ideas.map((idea) => `• ${idea.text}`).join('\n')}`
+      )
+      .join('\n\n');
+    const checklist: string[] = [];
+    for (const chapter of chapters) {
+      for (const idea of chapter.ideas.slice(0, 2)) {
+        if (checklist.length >= MAX_CHECKLIST_ITEMS) break;
+        checklist.push(idea.text);
+      }
+      if (checklist.length >= MAX_CHECKLIST_ITEMS) break;
+    }
+    return { summary, checklist, chapters };
+  } catch (error) {
+    console.warn('Scanned book structured summary was not valid JSON:', error);
+    return null;
+  }
 }

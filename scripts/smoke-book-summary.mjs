@@ -1,4 +1,5 @@
-// Smoke test for the full-book summary (lib/book-summary.ts).
+// Smoke test for the full-book summary (lib/book-summary.ts) and the
+// book reader / print document (lib/book-reader.ts).
 //
 // Run: node scripts/smoke-book-summary.mjs
 //
@@ -10,12 +11,16 @@
 // and the fail-fast behaviour (a chapter that still fails must fail the
 // whole summary, never produce a partial "full" summary).
 //
-// Regression test for: books only ever sent their first ~14,000
-// characters to Gemini with a "3-sentence summary" prompt, so the result
-// covered only the most important ideas of the beginning of the book.
-// Long articles pasted as links (a blog such as Blogger, or any other
-// article page) use the same comprehensive path with kind: 'article'
-// — section 9 below covers that.
+// Regression tests for the LIVE incident (2026-11-27 00:24): the real
+// book was uploaded to the live site and saved with ONE generic
+// section («القسم 1») + 8 ideas + a 2-item checklist, although the
+// splitter proves the same file has 10 chapters. Sections 12-14 cover
+// the fix: the route decision (every book takes the full path),
+// the length-integrity guard (a book cut in transit is refused with
+// 503 instead of being summarised from its beginning), and the
+// flat-text shape that produces a single generic section. Sections
+// 10-11 cover the structured chapters (envelope + plain-text fallback)
+// and section 16 the printable book document (Word -> PDF).
 
 import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
@@ -24,23 +29,35 @@ import { join } from 'node:path';
 import mammoth from 'mammoth';
 
 // Node's type stripping cannot resolve the extensionless './gemini'
-// import, so compile the two libs to a temp dir inside the project
+// import, so compile the libs to a temp dir inside the project
 // (so require('@google/genai') still resolves from node_modules) and
 // import the compiled output.
 const outDir = mkdtempSync(join(process.cwd(), '.tmp-book-summary-test-'));
 try {
   execSync(
-    `./node_modules/.bin/tsc lib/book-summary.ts lib/gemini.ts --outDir ${outDir} --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck --declaration false`,
+    `./node_modules/.bin/tsc lib/book-summary.ts lib/gemini.ts lib/book-reader.ts lib/source-detect.ts --outDir ${outDir} --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck --declaration false`,
     { stdio: 'pipe' }
   );
 } catch (error) {
-  console.error('Failed to compile lib/book-summary.ts:', error.stdout?.toString(), error.stderr?.toString());
+  console.error('Failed to compile book libs:', error.stdout?.toString(), error.stderr?.toString());
   rmSync(outDir, { recursive: true, force: true });
   process.exit(1);
 }
-const { splitBookIntoChapters, summarizeBookFull } = await import(
-  join(outDir, 'book-summary.js')
-);
+const {
+  splitBookIntoChapters,
+  summarizeBookFull,
+  summarizeScannedBook,
+  shouldUseFullSummary,
+  isTruncatedBookText,
+} = await import(join(outDir, 'book-summary.js'));
+const {
+  appendBookChapters,
+  parseBookSummary,
+  parsePlainSummaryToChapters,
+  stripBookChapters,
+  buildBookPrintHtml,
+} = await import(join(outDir, 'book-reader.js'));
+const { detectSource } = await import(join(outDir, 'source-detect.js'));
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -116,6 +133,8 @@ check('size sections cover the whole text', plainCovered >= plainText.length * 0
 
 // Fake Gemini client: returns canned per-chapter JSON, parsing the
 // chapter heading out of the prompt so titles come back correctly.
+// Ideas are objects {text, detail} — the shape the real model is
+// asked for, so the detail path is exercised too.
 function makeFakeAi({ failOnceTitles = new Set(), failAlwaysTitles = new Set() } = {}) {
   let calls = 0;
   const seen = new Set();
@@ -136,7 +155,16 @@ function makeFakeAi({ failOnceTitles = new Set(), failAlwaysTitles = new Set() }
         return {
           text: JSON.stringify({
             title: heading,
-            ideas: [`الفكرة الأولى في ${heading} وهي مهمة للفهم.`, `الفكرة الثانية في ${heading} مع مثال توضيحي.`],
+            ideas: [
+              {
+                text: `الفكرة الأولى في ${heading} وهي مهمة للفهم.`,
+                detail: `تفصيل موسّع للفكرة الأولى في ${heading}: يشرح المؤلف هذه الفكرة بأمثلة من النص ويبين خطواتها وأدلتها، حتى يستطيع الطالب حفظها وفهمها بعمق.`,
+              },
+              {
+                text: `الفكرة الثانية في ${heading} مع مثال توضيحي.`,
+                detail: `تفصيل موسّع للفكرة الثانية في ${heading}: مثال عملي من الكتاب يوضح الفكرة، مع شرح الأسباب والنتائج المترتبة عليها.`,
+              },
+            ],
           }),
         };
       },
@@ -151,7 +179,8 @@ const twoChapterBook = [
   LONG_AR,
 ].join('\n');
 
-// 6) Full combine: one block per chapter, bullets, checklist capped.
+// 6) Full combine: one block per chapter, bullets, checklist capped,
+// and structured chapters where every idea carries a detail.
 const fakeAi = makeFakeAi();
 const full = await summarizeBookFull(fakeAi, {
   text: twoChapterBook,
@@ -163,6 +192,17 @@ check('combined summary has both chapters', full.summary.includes('الفصل ا
 check('combined summary uses bullet points', full.summary.includes('• الفكرة الأولى'));
 check('checklist has 4 items (2 per chapter)', full.checklist.length === 4, `${full.checklist.length}`);
 check('no invented chapter titles', !full.summary.includes('Section'));
+check('structured chapters returned (2)', Array.isArray(full.chapters) && full.chapters.length === 2, `${full.chapters?.length}`);
+check(
+  'every idea has a non-empty detail',
+  (full.chapters || []).every((ch) =>
+    ch.ideas.every((idea) => typeof idea.detail === 'string' && idea.detail.trim().length > idea.text.trim().length)
+  )
+);
+check(
+  'checklist items are idea texts',
+  full.checklist.every((step) => step.startsWith('الفكرة'))
+);
 
 // 7) Retry recovery: a chapter failing once must succeed on retry.
 const flakyAi = makeFakeAi({ failOnceTitles: new Set(['الفصل الأول: البداية']) });
@@ -216,6 +256,248 @@ check(
 );
 check('article summary uses bullet points', articleFull.summary.includes('• الفكرة الأولى'));
 check('article checklist has 6 items (2 per section)', articleFull.checklist.length === 6, `${articleFull.checklist.length}`);
+
+// 10) Storage envelope: structured chapters round-trip through the
+// plain summary text, and every display/export helper strips it.
+const stored = appendBookChapters(full.summary, full.chapters);
+const parsed = parseBookSummary(stored);
+check('envelope round-trips the chapters', parsed.chapters?.length === 2, `${parsed.chapters?.length}`);
+check(
+  'envelope round-trips idea details',
+  parsed.chapters?.[0]?.ideas?.[0]?.detail === full.chapters[0].ideas[0].detail
+);
+check('display summary has no envelope', stripBookChapters(stored) === full.summary);
+check('display summary has no JSON', !stripBookChapters(stored).includes('BOOK_CHAPTERS'));
+check('plain summary without envelope parses to null chapters', parseBookSummary(full.summary).chapters === null);
+check(
+  'corrupt envelope degrades to plain text',
+  parseBookSummary(`${full.summary}\n\n<!--BOOK_CHAPTERS_v1-->\n{not json`).chapters === null &&
+    parseBookSummary(`${full.summary}\n\n<!--BOOK_CHAPTERS_v1-->\n{not json`).displaySummary === full.summary
+);
+
+// 11) Plain-text fallback: older rows (no envelope) still open in the
+// reader — parsed back into chapters, and no idea ever opens empty.
+const oldPlain = 'القسم 1: اللغات الشاعرة\n• الفكرة الأولى عن الشعر.\n• الفكرة الثانية عن النثر.\n\nالقسم 2: لغة التعبير\n• فكرة واحدة عن التعبير.';
+const oldChapters = parsePlainSummaryToChapters(oldPlain);
+check('fallback parses 2 chapters from plain text', oldChapters.length === 2, `${oldChapters.length}`);
+check(
+  'fallback ideas carry a detail',
+  oldChapters.every((ch) => ch.ideas.every((idea) => idea.detail && idea.detail.trim().length > 0))
+);
+const proseOnly = 'هذا ملخص نثري قصير عن الكتاب كله في فقرة واحدة بلا نقاط.';
+const proseChapters = parsePlainSummaryToChapters(proseOnly);
+check('prose-only summary becomes 1 chapter', proseChapters.length === 1, `${proseChapters.length}`);
+check('prose chapter keeps the whole text as detail', proseChapters[0].ideas[0].detail.includes('ملخص نثري'));
+check('empty summary parses to no chapters', parsePlainSummaryToChapters('').length === 0);
+
+// 12) Route decision: EVERY book takes the full path, whatever the
+// file type — PDF or Word, extracted text or scanned (base64, where
+// bodyContent is empty and the short path with the file still applies).
+check(
+  'book with text takes the full path',
+  shouldUseFullSummary({ isBookOrDoc: true, isFullArticle: false, bodyContentLength: 135292 })
+);
+check(
+  'book with tiny text still takes the full path',
+  shouldUseFullSummary({ isBookOrDoc: true, isFullArticle: false, bodyContentLength: 100 })
+);
+check(
+  'scanned book (no text, Gemini reads the file) does not take the text path',
+  !shouldUseFullSummary({ isBookOrDoc: true, isFullArticle: false, bodyContentLength: 0 })
+);
+check(
+  'long article takes the full path',
+  shouldUseFullSummary({ isBookOrDoc: false, isFullArticle: true, bodyContentLength: 5000 })
+);
+check(
+  'short page does not take the full path',
+  !shouldUseFullSummary({ isBookOrDoc: false, isFullArticle: false, bodyContentLength: 5000 })
+);
+check(
+  'video never takes the full path',
+  !shouldUseFullSummary({ isBookOrDoc: false, isFullArticle: false, bodyContentLength: 0 })
+);
+
+// 13) Length-integrity guard: the live incident — the server received
+// ~2,000 chars while the browser claimed ~135,000. Refuse; a full
+// text (or a few percent of JSON overhead) must pass.
+check('live case: 2000 received of 135292 claimed is truncated', isTruncatedBookText(2000, 135292));
+check('full text received is not truncated', !isTruncatedBookText(135292, 135292));
+check('within 5% tolerance is not truncated', !isTruncatedBookText(130000, 135292));
+check('below 5% tolerance is truncated', isTruncatedBookText(120000, 135292));
+check('no claim means no guard', !isTruncatedBookText(0, 0) && !isTruncatedBookText(500, 0));
+
+// 14) PDF-shape flat text (no newlines at all): a long flat book must
+// still split into several chapters — a single generic «القسم 1»
+// only happens for a SHORT flat text, which is the live symptom.
+const flatLong = (`مقدمة عن الكتاب. ${LONG_AR}الفصل الأول التعريف ${LONG_AR}الفصل الثاني التاريخ ${LONG_AR}الفصل الثالث النقد ${LONG_AR}الفصل الرابع الأسلوب ${LONG_AR}الفصل الخامس الخاتمة ${LONG_AR}`).replace(/\n/g, ' ');
+const flatLongChapters = splitBookIntoChapters(flatLong, 'ar');
+check('long flat PDF text splits into >= 5 chapters', flatLongChapters.length >= 5, `${flatLongChapters.length}`);
+const flatShort = 'مقدمة قصيرة. الفصل الأول التعريف باللغة. نص قصير جداً.';
+const flatShortChapters = splitBookIntoChapters(flatShort, 'ar');
+check('short flat text is the single-section case (live symptom)', flatShortChapters.length === 1, `${flatShortChapters.length}`);
+
+// 15) Source counts (live observation: the Word book was counted as
+// PDF): the classifier must agree with the upload URL the route
+// builds — file://word/ is Word, file://pdf/ is PDF.
+check("file://word/ counts as word", detectSource('file://word/allugha-alshaera') === 'word');
+check("file://pdf/ counts as pdf", detectSource('file://pdf/photosynthesis-test') === 'pdf');
+check("file://doc/ counts as word", detectSource('file://doc/old-book') === 'word');
+
+// 16) Printable book document (Word -> PDF): the print HTML contains
+// every chapter title, every idea and every detail, in RTL, with the
+// bundled Arabic font and a page break per chapter.
+const printHtml = buildBookPrintHtml({
+  title: 'اللغة الشاعرة',
+  chapters: full.chapters,
+  lang: 'ar',
+  autoPrint: false,
+});
+check('print html is rtl', printHtml.includes('dir="rtl"'));
+check(
+  'print html uses a naskh arabic font stack',
+  printHtml.includes("'Noto Naskh Arabic'") && printHtml.includes("'Traditional Arabic'")
+);
+check(
+  'print html contains all chapter titles',
+  full.chapters.every((ch) => printHtml.includes(ch.title))
+);
+check(
+  'print html contains all ideas and details',
+  full.chapters.every((ch) =>
+    ch.ideas.every((idea) => printHtml.includes(idea.text) && printHtml.includes(idea.detail))
+  )
+);
+check('print html breaks a page per chapter', printHtml.includes('page-break-before: always'));
+check('print html has no auto-print script when disabled', !printHtml.includes('window.print()'));
+const printHtmlAuto = buildBookPrintHtml({ title: 'x', chapters: full.chapters, lang: 'ar' });
+check('print html auto-prints by default', printHtmlAuto.includes('window.print()'));
+const printHtmlEn = buildBookPrintHtml({ title: 'Test', chapters: full.chapters, lang: 'en', autoPrint: false });
+check('print html is ltr for english', printHtmlEn.includes('dir="ltr"'));
+
+// 17) Real text-based PDF book: extracted with pdfjs exactly like the
+// browser does, then through the full path with chapters + details.
+if (existsSync('test-files/photosynthesis-test.pdf')) {
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const pdfData = new Uint8Array(readFileSync('test-files/photosynthesis-test.pdf'));
+  const pdfDoc = await pdfjs.getDocument({ data: pdfData, useWorker: false, isEvalSupported: false }).promise;
+  let pdfText = '';
+  for (let i = 1; i <= pdfDoc.numPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const content = await page.getTextContent();
+    pdfText += content.items.map((item) => item.str).join(' ') + '\n';
+  }
+  pdfText = pdfText.trim();
+  console.log(`\nPDF book: ${pdfDoc.numPages} pages, ${pdfText.length} chars`);
+  check('pdf book extracts real text', pdfText.length >= 80, `${pdfText.length}`);
+  const pdfFull = await summarizeBookFull(makeFakeAi(), {
+    text: pdfText,
+    lang: 'en',
+    requestStartedAt: Date.now(),
+  });
+  check('pdf book takes the full path with chapters', pdfFull.chapters.length >= 1, `${pdfFull.chapters.length}`);
+  check(
+    'pdf book ideas have details',
+    pdfFull.chapters.every((ch) => ch.ideas.every((idea) => idea.detail && idea.detail.length > 0))
+  );
+} else {
+  console.log('\nSKIP real PDF book checks (test-files/photosynthesis-test.pdf not present)');
+}
+
+// 18) The PDF version of the same book («اللغة الشاعرة», 94 pages):
+// its text layer is real (137k chars), but stored in Arabic
+// presentation forms — the splitter normalises them (NFKC). The PDF
+// still splits into generic size sections, not real chapter titles:
+// its pages are narrow (body lines ~70 chars), so the heading
+// heuristic's "long following line" guard never fires, and the titles
+// sit inline in the page text. That is a KNOWN LIMITATION, documented
+// here, not a failure: the whole book is covered (see the coverage
+// check) and the summary is complete and section-by-section — only
+// the section titles are generic. A heading rule that finds them
+// (next-3-lines combined) was tried and REVERTED: it promoted verse
+// lines and subsection headings to chapters in the Word file and
+// crowded out real chapters.
+if (existsSync('test-files/allugha-alshaera.pdf')) {
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const bigPdfData = new Uint8Array(readFileSync('test-files/allugha-alshaera.pdf'));
+  const bigPdfDoc = await pdfjs.getDocument({ data: bigPdfData, useWorker: false, isEvalSupported: false }).promise;
+  let bigPdfText = '';
+  for (let i = 1; i <= bigPdfDoc.numPages; i++) {
+    const page = await bigPdfDoc.getPage(i);
+    const content = await page.getTextContent();
+    bigPdfText += content.items.map((item) => item.str).join(' ') + '\n';
+  }
+  bigPdfText = bigPdfText.trim();
+  console.log(`\nBig PDF book: ${bigPdfDoc.numPages} pages, ${bigPdfText.length} chars`);
+  check('big pdf book extracts its full text', bigPdfText.length >= 100000, `${bigPdfText.length}`);
+  const bigPdfChapters = splitBookIntoChapters(bigPdfText, 'ar');
+  console.log(`Big PDF chapters: ${bigPdfChapters.map((c) => c.title).join(' | ')}`);
+  check('big pdf book splits into >= 5 chapters', bigPdfChapters.length >= 5, `${bigPdfChapters.length}`);
+  const bigPdfCovered = bigPdfChapters.reduce((n, c) => n + c.text.length, 0);
+  check(
+    'big pdf chapters cover >= 80% of the text',
+    bigPdfCovered >= bigPdfText.length * 0.8,
+    `${bigPdfCovered}/${bigPdfText.length}`
+  );
+  const bigPdfFull = await summarizeBookFull(makeFakeAi(), {
+    text: bigPdfText,
+    lang: 'ar',
+    requestStartedAt: Date.now(),
+  });
+  check('big pdf book takes the full path', bigPdfFull.chapters.length >= 5, `${bigPdfFull.chapters.length}`);
+  check(
+    'big pdf book ideas have details',
+    bigPdfFull.chapters.every((ch) => ch.ideas.every((idea) => idea.detail && idea.detail.length > 0))
+  );
+} else {
+  console.log('\nSKIP big PDF book checks (test-files/allugha-alshaera.pdf not present)');
+}
+
+// 19) Scanned-book structured summary (a PDF with no text layer, sent
+// to Gemini as base64): a good model answer becomes chapters with
+// details; a bad answer returns null so the route falls back to the
+// short summary instead of failing the upload.
+function makeScannedFakeAi(responseText) {
+  return { models: { generateContent: async () => ({ text: responseText }) } };
+}
+const scannedFull = await summarizeScannedBook(
+  makeScannedFakeAi(
+    JSON.stringify({
+      chapters: [
+        {
+          title: 'الفصل الأول: البداية',
+          ideas: [
+            { text: 'فكرة أولى.', detail: 'تفصيل الفكرة الأولى من الكتاب الممسوح.' },
+            { text: 'فكرة ثانية.', detail: 'تفصيل الفكرة الثانية من الكتاب الممسوح.' },
+          ],
+        },
+        {
+          title: 'الفصل الثاني: النهاية',
+          ideas: [{ text: 'فكرة ثالثة.', detail: 'تفصيل الفكرة الثالثة من الكتاب الممسوح.' }],
+        },
+      ],
+    })
+  ),
+  { base64: 'AAAA', mimeType: 'application/pdf', lang: 'ar' }
+);
+check('scanned book returns 2 chapters', scannedFull?.chapters.length === 2, `${scannedFull?.chapters.length}`);
+check(
+  'scanned book summary has both chapters',
+  scannedFull?.summary.includes('الفصل الأول') && scannedFull?.summary.includes('الفصل الثاني')
+);
+check('scanned book checklist has 3 items', scannedFull?.checklist.length === 3, `${scannedFull?.checklist.length}`);
+check(
+  'scanned book ideas have details',
+  scannedFull?.chapters.every((ch) => ch.ideas.every((idea) => idea.detail && idea.detail.length > 0))
+);
+check(
+  'scanned book with bad json returns null',
+  (await summarizeScannedBook(makeScannedFakeAi('{not json'), { base64: 'AAAA', mimeType: 'application/pdf', lang: 'ar' })) === null
+);
+check(
+  'scanned book with no chapters returns null',
+  (await summarizeScannedBook(makeScannedFakeAi(JSON.stringify({ chapters: [] })), { base64: 'AAAA', mimeType: 'application/pdf', lang: 'ar' })) === null
+);
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed`);
