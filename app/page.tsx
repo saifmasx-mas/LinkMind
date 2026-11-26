@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { translations, Language } from '@/lib/translations';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { detectSource } from '@/lib/source-detect';
+import { decidePdfBookPath, noticeAfterSave } from '@/lib/book-upload';
 import {
   buildBookPrintHtml,
   countBookIdeas,
@@ -674,7 +675,11 @@ export default function Home() {
           }
           // I7: the page/transcript could not be fetched, so the summary is
           // based on the title alone — say so instead of failing silently.
-          if (data.contentWarning) setNotice(t.contentWarning);
+          // A successful save with no warning of its own clears any
+          // stale notice (e.g. an old "scanned book" warning from a
+          // previous failed upload) so it is not misread as describing
+          // the item that has just been saved.
+          setNotice(noticeAfterSave(!!data.contentWarning, t.contentWarning));
           await fetchBookmarks();
           setUrlInput('');
         } else {
@@ -765,11 +770,16 @@ export default function Home() {
           console.error('PDF text extraction failed:', error);
         }
 
-        if (extractedText.length >= 80) {
+        // Which path a PDF book takes is decided in lib/book-upload.ts
+        // (decidePdfBookPath) so the rule is unit-testable: a text PDF
+        // always takes the text path, a small scanned PDF goes as
+        // Base64, and only a scanned PDF over 1.8MB shows the warning.
+        const pdfPath = decidePdfBookPath(extractedText.length, file.size);
+        if (pdfPath === 'text') {
           payload.bookText = extractedText.slice(0, MAX_BOOK_TEXT_CHARS);
           payload.bookTextLength = extractedText.length;
           payload.bookType = 'pdf';
-        } else if (file.size <= 1.8 * 1024 * 1024) {
+        } else if (pdfPath === 'scanned-small') {
           // 2. إذا كان PDF مصوراً (Scan) وحجمه مناسب نرسله كـ Base64
           const base64 = await fileToBase64(file);
           payload.bookBase64 = base64;
@@ -866,7 +876,11 @@ export default function Home() {
           if (typeof data.remainingCredits === 'number') {
             setCredits(data.remainingCredits);
           }
-          if (data.contentWarning) setNotice(t.contentWarning);
+          // A successful save with no warning of its own clears any
+          // stale notice (see the link-save path above) so an old
+          // "scanned book" warning is not misread as describing the
+          // book that has just been saved.
+          setNotice(noticeAfterSave(!!data.contentWarning, t.contentWarning));
           await fetchBookmarks();
         } else {
           console.error('Failed to save book:', dbError.message);
