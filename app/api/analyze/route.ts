@@ -242,6 +242,11 @@ export async function POST(req: Request) {
     // alone, so the prompt can forbid inventing details (see below).
     let hasRealDescription = false;
     let metadataOnly = false;
+    // FULL-ARTICLE SUMMARY: true for video/social links (YouTube,
+    // TikTok), which keep the short single-call summary — a short clip
+    // or post has no sections to split. Long article pages stay false
+    // and take the comprehensive path below.
+    let isVideoOrSocialLink = false;
     // I7: set when the page/transcript could not be fetched, so the summary
     // is based on the title alone and the user is told about it.
     let contentWarning = false;
@@ -267,6 +272,7 @@ export async function POST(req: Request) {
       const videoId = extractYouTubeId(finalUrl);
 
       if (videoId) {
+        isVideoOrSocialLink = true;
         // REAL-CONTENT FIX (2026-11-26): fetch the three sources in
         // PARALLEL so the fetch stage stays at ~10s instead of ~23s
         // sequential (oEmbed 8s + transcript 15s). Each source fails
@@ -326,6 +332,7 @@ export async function POST(req: Request) {
         // No transcript: the summary comes from the metadata alone.
         metadataOnly = !hasTranscript;
       } else if (lowerUrl.includes('tiktok.com')) {
+        isVideoOrSocialLink = true;
         let targetTikTokUrl = finalUrl;
         if (lowerUrl.includes('vm.tiktok.com') || lowerUrl.includes('vt.tiktok.com')) {
           targetTikTokUrl = await resolveShortUrl(finalUrl);
@@ -404,13 +411,18 @@ export async function POST(req: Request) {
             image = $('meta[property="og:image"]').attr('content') || '';
 
             $('script, style, nav, footer, header').remove();
+            // FULL-ARTICLE SUMMARY: keep one line per element (headings
+            // stay on their own lines) so the section splitter in
+            // lib/book-summary.ts can find the article's own headings,
+            // and keep up to the full-text cap instead of 14,000 chars —
+            // the short single-call path below slices its own copy.
             bodyContent = $('article, main, body')
               .find('h1, h2, h3, p, li')
-              .map((_, el) => $(el).text().trim())
+              .map((_, el) => $(el).text().replace(/\s+/g, ' ').trim())
               .get()
-              .join(' ')
-              .replace(/\s+/g, ' ')
-              .slice(0, 14000);
+              .filter(Boolean)
+              .join('\n')
+              .slice(0, MAX_BOOK_TEXT_CHARS);
             if (!bodyContent) contentWarning = true;
           } else {
             contentWarning = true;
@@ -502,19 +514,28 @@ export async function POST(req: Request) {
 
     const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 
-    // FULL-BOOK SUMMARY (2026-11-26): a book sent as extracted text is
-    // summarised chapter by chapter in lib/book-summary.ts (parallel
-    // per-chapter Gemini calls, combined into one organised summary).
-    // Links and scanned PDFs (bookBase64, where Gemini reads the file
-    // itself) keep the single-call path below.
+    // FULL-BOOK SUMMARY (2026-11-26) + FULL-ARTICLE SUMMARY: a book
+    // sent as extracted text is summarised chapter by chapter in
+    // lib/book-summary.ts (parallel per-chapter Gemini calls, combined
+    // into one organised summary). A long article page (a blog such as
+    // Blogger, or any article link with substantial text) takes the
+    // same path section by section. Scanned PDFs (bookBase64, where
+    // Gemini reads the file itself), videos and short posts keep the
+    // single-call path below.
     let fullBookResult: { summary: string; checklist: string[] } | null = null;
     let aiRes;
-    if (isBookOrDoc && bodyContent) {
+    // A video/social link never takes the article path; a generic page
+    // only does when it brought back substantial real text (>= 1000
+    // chars) — a thin page still gets the short metadata summary.
+    const isFullArticle =
+      !isBookOrDoc && !isVideoOrSocialLink && bodyContent.trim().length >= 1000;
+    if ((isBookOrDoc || isFullArticle) && bodyContent) {
       try {
         fullBookResult = await summarizeBookFull(ai, {
           text: bodyContent,
           lang,
           requestStartedAt,
+          kind: isBookOrDoc ? 'book' : 'article',
         });
       } catch (error) {
         console.error('Gemini full book summary failed:', error);
@@ -546,7 +567,7 @@ ${langInstruction}
 
 Title: ${rawTitle}
 Description: ${rawDescription}
-Content/Transcript: ${bodyContent || rawDescription}
+Content/Transcript: ${(bodyContent || rawDescription).slice(0, 14000)}
 URL: ${finalUrl}`;
 
       const contentsPayload: any = bookBase64
@@ -594,11 +615,13 @@ URL: ${finalUrl}`;
     }
 
     if (fullBookResult) {
-      // Chapter-by-chapter summary: the title stays the real book title
-      // (hasRealTitle), the summary is the combined per-chapter text.
+      // Chapter-by-chapter (or section-by-section) summary: the title
+      // stays the real fetched title (hasRealTitle), the summary is the
+      // combined per-section text. Books are Learning; articles keep
+      // the default category set above (General).
       finalSummary = fullBookResult.summary;
       finalChecklist = fullBookResult.checklist;
-      finalCategory = 'Learning';
+      if (isBookOrDoc) finalCategory = 'Learning';
     } else {
       try {
         const parsed = JSON.parse(aiRes?.text || '{}');

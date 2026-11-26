@@ -5,9 +5,12 @@ import { generateContentWithFallback } from './gemini';
 // site used to send only the first ~14,000 characters to Gemini with a
 // "3-sentence summary of the core thesis" prompt, so the result covered
 // only the most important ideas of the beginning of the book. The feature
-// requested is a COMPREHENSIVE summary of the WHOLE book — every main
-// idea, organised chapter by chapter, so a student can study from it
-// without reading the whole book.
+// requested is a COMPREHENSIVE summary of the WHOLE text — every main
+// idea, organised chapter by chapter (or section by section for
+// articles), so a student can study from it without reading the whole
+// thing. Long articles pasted as links (a blog such as Blogger, or any
+// other article page) use this same path with kind: 'article'; videos
+// and short social posts keep the single-call short summary.
 //
 // How it works:
 // 1. splitBookIntoChapters() finds the book's own chapter headings
@@ -303,7 +306,8 @@ interface ChapterSummary {
 async function summarizeChapter(
   ai: GoogleGenAI,
   chapter: BookChapter,
-  lang: string
+  lang: string,
+  kind: 'book' | 'article' = 'book'
 ): Promise<ChapterSummary> {
   const langInstruction =
     lang === 'ar'
@@ -313,15 +317,15 @@ async function summarizeChapter(
         : 'Write the chapter title and ideas in clear, natural English.';
 
   const response = await generateContentWithFallback(ai, {
-    contents: `Summarize ONLY this chapter/section of a book. Extract:
-1. The chapter title (use the heading provided below; clean it up if needed).
-2. ALL main ideas of this chapter: every key idea, argument, example and conclusion — ${MAX_IDEAS_PER_CHAPTER} bullet points at most, each 1-2 sentences. Do NOT leave out any main idea: this is a comprehensive summary, not a short overview.
-3. Do NOT invent ideas that are not in the text below. Do NOT add content from other chapters.
+    contents: `Summarize ONLY this ${kind === 'article' ? 'section of an article' : 'chapter/section of a book'}. Extract:
+1. The ${kind === 'article' ? 'section' : 'chapter'} title (use the heading provided below; clean it up if needed).
+2. ALL main ideas of this ${kind === 'article' ? 'section' : 'chapter'}: every key idea, argument, example and conclusion — ${MAX_IDEAS_PER_CHAPTER} bullet points at most, each 1-2 sentences. Do NOT leave out any main idea: this is a comprehensive summary, not a short overview.
+3. Do NOT invent ideas that are not in the text below. Do NOT add content from other ${kind === 'article' ? 'sections' : 'chapters'}.
 
 ${langInstruction}
 
-Chapter heading: ${chapter.title}
-Chapter text: ${chapter.text}`,
+${kind === 'article' ? 'Section' : 'Chapter'} heading: ${chapter.title}
+${kind === 'article' ? 'Section' : 'Chapter'} text: ${chapter.text}`,
     config: {
       responseMimeType: 'application/json',
       responseSchema: {
@@ -350,8 +354,9 @@ Chapter text: ${chapter.text}`,
 
 export async function summarizeBookFull(
   ai: GoogleGenAI,
-  opts: { text: string; lang: string; requestStartedAt: number }
+  opts: { text: string; lang: string; requestStartedAt: number; kind?: 'book' | 'article' }
 ): Promise<{ summary: string; checklist: string[] }> {
+  const kind = opts.kind ?? 'book';
   const chapters = splitBookIntoChapters(opts.text, opts.lang);
   if (chapters.length === 0) {
     throw new Error('No book content to summarize');
@@ -361,7 +366,7 @@ export async function summarizeBookFull(
   // the sum — one sequential pass over 8 chapters would blow the 55s
   // frontend abort. Each call carries its own model fallback chain.
   const results = await Promise.allSettled(
-    chapters.map((chapter) => summarizeChapter(ai, chapter, opts.lang))
+    chapters.map((chapter) => summarizeChapter(ai, chapter, opts.lang, kind))
   );
   let failed = results
     .map((result, index) => ({ result, index }))
@@ -371,7 +376,7 @@ export async function summarizeBookFull(
   // young — retrying after ~25s would run into the frontend abort.
   if (failed.length > 0 && Date.now() - opts.requestStartedAt < RETRY_DEADLINE_MS) {
     const retries = await Promise.allSettled(
-      failed.map(({ index }) => summarizeChapter(ai, chapters[index], opts.lang))
+      failed.map(({ index }) => summarizeChapter(ai, chapters[index], opts.lang, kind))
     );
     retries.forEach((retry, i) => {
       if (retry.status === 'fulfilled') {
@@ -388,7 +393,7 @@ export async function summarizeBookFull(
   // this into 503 AI_UNAVAILABLE with no credit deducted.
   if (failed.length > 0) {
     throw new Error(
-      `Could not summarize ${failed.length} of ${chapters.length} chapters`
+      `Could not summarize ${failed.length} of ${chapters.length} ${kind === 'article' ? 'sections' : 'chapters'}`
     );
   }
 
