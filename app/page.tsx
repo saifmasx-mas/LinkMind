@@ -177,6 +177,12 @@ export default function Home() {
   // plainly instead of the generic save error. AbortSignal.timeout aborts
   // with a DOMException named 'TimeoutError'.
   const ANALYZE_TIMEOUT_MS = 55_000;
+  // FULL-BOOK SUMMARY (2026-11-26): the old 14,000-character cap meant
+  // only the beginning of a book ever reached the server. The whole
+  // extracted text (up to 200,000 characters ≈ a full typical book) is
+  // now sent, and the server splits it into chapters in
+  // lib/book-summary.ts. Must match MAX_BOOK_TEXT_CHARS there.
+  const MAX_BOOK_TEXT_CHARS = 200_000;
   const analyzeTimeoutMessage = (): string =>
     lang === 'ar'
       ? 'استغرق التحليل وقتاً طويلاً، حاول مجدداً.'
@@ -601,7 +607,8 @@ export default function Home() {
       reader.readAsDataURL(file);
     });
 
-  // رفع كتاب PDF أو مستند Word / TXT وتلخيصه لأفكار بسرعة فائقة
+  // رفع كتاب PDF أو مستند Word / TXT وتلخيصه تلخيصاً شاملاً فصلاً فصلاً
+  // (lib/book-summary.ts) بدل ملخص مختصر لأهم الأفكار فقط
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
@@ -637,24 +644,31 @@ export default function Home() {
           });
           try {
             const pdf = await loadingTask.promise;
-            const maxPages = Math.min(pdf.numPages, 25);
+            // FULL-BOOK SUMMARY (2026-11-26): read up to 200 pages (was
+            // 25) and keep page breaks as newlines — the server splits
+            // the book into chapters from its headings, and headings only
+            // survive when line breaks are preserved.
+            const maxPages = Math.min(pdf.numPages, 200);
             for (let i = 1; i <= maxPages; i++) {
               const page = await pdf.getPage(i);
               const content = await page.getTextContent();
               extractedText +=
-                content.items.map((item) => ('str' in item ? item.str : '')).join(' ') + ' ';
-              if (extractedText.length > 14000) break;
+                content.items.map((item) => ('str' in item ? item.str : '')).join(' ') + '\n';
+              if (extractedText.length > MAX_BOOK_TEXT_CHARS) break;
             }
           } finally {
             await loadingTask.destroy();
           }
-          extractedText = extractedText.replace(/\s+/g, ' ').trim();
+          extractedText = extractedText
+            .replace(/[^\S\n]+/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
         } catch (error) {
           console.error('PDF text extraction failed:', error);
         }
 
         if (extractedText.length >= 80) {
-          payload.bookText = extractedText.slice(0, 14000);
+          payload.bookText = extractedText.slice(0, MAX_BOOK_TEXT_CHARS);
           payload.bookType = 'pdf';
         } else if (file.size <= 1.8 * 1024 * 1024) {
           // 2. إذا كان PDF مصوراً (Scan) وحجمه مناسب نرسله كـ Base64
@@ -674,20 +688,28 @@ export default function Home() {
         const mammoth = await import('mammoth');
         const arrayBuffer = await file.arrayBuffer();
         const result = await mammoth.extractRawText({ arrayBuffer });
-        const text = (result.value || '').replace(/\s+/g, ' ').trim();
+        // Keep paragraph breaks (mammoth returns one paragraph per line)
+        // so the server can find the chapter headings.
+        const text = (result.value || '')
+          .replace(/[^\S\n]+/g, ' ')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
         if (!text) {
           setNotice(lang === 'ar' ? 'ملف Word فارغ!' : 'Word document is empty!');
           return;
         }
-        payload.bookText = text.slice(0, 14000);
+        payload.bookText = text.slice(0, MAX_BOOK_TEXT_CHARS);
         payload.bookType = 'word';
       } else {
-        const text = (await file.text()).replace(/\s+/g, ' ').trim();
+        const text = (await file.text())
+          .replace(/[^\S\n]+/g, ' ')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
         if (!text) {
           setNotice(lang === 'ar' ? 'الملف النصي فارغ!' : 'Text file is empty!');
           return;
         }
-        payload.bookText = text.slice(0, 14000);
+        payload.bookText = text.slice(0, MAX_BOOK_TEXT_CHARS);
         payload.bookType = 'word';
       }
 

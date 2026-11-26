@@ -7,6 +7,7 @@ import { fetchPublicUrl } from '@/lib/safe-fetch';
 import { fetchYouTubeApiMetadata, fetchYouTubeOEmbed } from '@/lib/youtube';
 import { fetchTikTokOEmbed, fetchTikTokPageMetadata } from '@/lib/tiktok';
 import { generateContentWithFallback } from '@/lib/gemini';
+import { MAX_BOOK_TEXT_CHARS, summarizeBookFull } from '@/lib/book-summary';
 import { getAuthenticatedUserId } from '@/lib/auth';
 import { deductCredit } from '@/lib/credits';
 import { checkRateLimit, pruneRateLimitBuckets } from '@/lib/rate-limit';
@@ -216,7 +217,12 @@ export async function POST(req: Request) {
 
     let rawTitle = bookTitle || '';
     let rawDescription = '';
-    let bodyContent = bookText ? String(bookText).slice(0, 14000) : '';
+    // FULL-BOOK SUMMARY (2026-11-26): the old 14,000-character cap meant
+    // Gemini only ever saw the beginning of a book, so the summary could
+    // only cover its most important ideas. The whole extracted text (up
+    // to the frontend cap) now reaches the chapter splitter in
+    // lib/book-summary.ts.
+    let bodyContent = bookText ? String(bookText).slice(0, MAX_BOOK_TEXT_CHARS) : '';
     let image = '';
     let finalUrl = String(url || '').trim();
     const isBookOrDoc = Boolean(bookText || bookBase64);
@@ -447,6 +453,23 @@ export async function POST(req: Request) {
       }
     }
 
+    // NO-CONTENT FIX for books (2026-11-26): a book with a title but
+    // almost no extracted text must not reach Gemini — the model would
+    // invent a summary of a book it cannot read, exactly the invented
+    // summaries PR #6 stopped for links. Fail fast with the same 503,
+    // no Gemini call, no save, no credit deduction.
+    if (isBookOrDoc && !bookBase64 && bodyContent.trim().length < 80) {
+      return NextResponse.json(
+        {
+          error: 'CONTENT_UNAVAILABLE',
+          message:
+            'تعذّر استخراج نص هذا الكتاب، فلم يتم إنشاء ملخص. جرّب ملفاً آخر، ولم يُخصم أي رصيد.',
+          contentWarning: true,
+        },
+        { status: 503 }
+      );
+    }
+
     const langInstruction =
       lang === 'ar'
         ? 'Write the title, summary, and checklist steps in clear, eloquent Arabic.'
@@ -478,18 +501,41 @@ export async function POST(req: Request) {
     }
 
     const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-    const promptText = isBookOrDoc
-      ? `Summarize this book/document quickly and extract:
+
+    // FULL-BOOK SUMMARY (2026-11-26): a book sent as extracted text is
+    // summarised chapter by chapter in lib/book-summary.ts (parallel
+    // per-chapter Gemini calls, combined into one organised summary).
+    // Links and scanned PDFs (bookBase64, where Gemini reads the file
+    // itself) keep the single-call path below.
+    let fullBookResult: { summary: string; checklist: string[] } | null = null;
+    let aiRes;
+    if (isBookOrDoc && bodyContent) {
+      try {
+        fullBookResult = await summarizeBookFull(ai, {
+          text: bodyContent,
+          lang,
+          requestStartedAt,
+        });
+      } catch (error) {
+        console.error('Gemini full book summary failed:', error);
+        return NextResponse.json(
+          { error: 'AI_UNAVAILABLE', contentWarning },
+          { status: 503 }
+        );
+      }
+    } else {
+      const promptText = isBookOrDoc
+        ? `Summarize this whole book/document comprehensively, chapter by chapter, and extract:
 1. A clean book/document title.
-2. A concise 3-sentence summary of the core thesis and main ideas.
+2. A FULL summary covering ALL main ideas of the whole document, organised chapter by chapter: for each chapter give its title and every main idea. Do not leave out any main idea — this is a comprehensive summary, not just the top ideas.
 3. Category: ONLY one of "Programming", "Learning", "Business", "General".
-4. Actionable Checklist: 5 to 8 key principles and practical steps from the book.
+4. Actionable Checklist: the key principles and practical steps from the whole book (up to 10 items).
 
 ${langInstruction}
 
 Title: ${rawTitle}
 ${bodyContent ? `Content: ${bodyContent}` : ''}`
-      : `Summarize this video/post/article and extract:
+        : `Summarize this video/post/article and extract:
 1. A clean, concise title.
 2. A 2-sentence executive summary.
 3. Category: ONLY one of "Programming", "Learning", "Business", "General".
@@ -503,68 +549,76 @@ Description: ${rawDescription}
 Content/Transcript: ${bodyContent || rawDescription}
 URL: ${finalUrl}`;
 
-    const contentsPayload: any = bookBase64
-      ? [
-          {
-            inlineData: {
-              data: bookBase64,
-              mimeType: bookMimeType || 'application/pdf',
-            },
-          },
-          promptText,
-        ]
-      : promptText;
-
-    // I1: one shared Gemini fallback helper (lib/gemini.ts) instead of the
-    // local generateFast, which retried even auth errors and started with
-    // the undocumented gemini-3.8-flash-lite model.
-    let aiRes;
-    try {
-      aiRes = await generateContentWithFallback(ai, {
-        contents: contentsPayload,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              summary: { type: Type.STRING },
-              category: { type: Type.STRING },
-              checklist: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
+      const contentsPayload: any = bookBase64
+        ? [
+            {
+              inlineData: {
+                data: bookBase64,
+                mimeType: bookMimeType || 'application/pdf',
               },
             },
-            required: ['title', 'summary', 'category', 'checklist'],
+            promptText,
+          ]
+        : promptText;
+
+      // I1: one shared Gemini fallback helper (lib/gemini.ts) instead of the
+      // local generateFast, which retried even auth errors and started with
+      // the undocumented gemini-3.8-flash-lite model.
+      try {
+        aiRes = await generateContentWithFallback(ai, {
+          contents: contentsPayload,
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                summary: { type: Type.STRING },
+                category: { type: Type.STRING },
+                checklist: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+              required: ['title', 'summary', 'category', 'checklist'],
+            },
           },
-        },
-      });
-    } catch (error) {
-      console.error('Gemini analysis failed:', error);
-      return NextResponse.json(
-        { error: 'AI_UNAVAILABLE', contentWarning },
-        { status: 503 }
-      );
+        });
+      } catch (error) {
+        console.error('Gemini analysis failed:', error);
+        return NextResponse.json(
+          { error: 'AI_UNAVAILABLE', contentWarning },
+          { status: 503 }
+        );
+      }
     }
 
-    try {
-      const parsed = JSON.parse(aiRes.text || '{}');
-      // NO-CONTENT FIX: never let the model overwrite a real fetched title
-      // (e.g. the oEmbed title) with an invented one. The model's title is
-      // only accepted when the original title was missing in the first place.
-      if (!hasRealTitle && parsed.title) {
-        finalTitle = parsed.title;
+    if (fullBookResult) {
+      // Chapter-by-chapter summary: the title stays the real book title
+      // (hasRealTitle), the summary is the combined per-chapter text.
+      finalSummary = fullBookResult.summary;
+      finalChecklist = fullBookResult.checklist;
+      finalCategory = 'Learning';
+    } else {
+      try {
+        const parsed = JSON.parse(aiRes?.text || '{}');
+        // NO-CONTENT FIX: never let the model overwrite a real fetched title
+        // (e.g. the oEmbed title) with an invented one. The model's title is
+        // only accepted when the original title was missing in the first place.
+        if (!hasRealTitle && parsed.title) {
+          finalTitle = parsed.title;
+        }
+        finalSummary = parsed.summary || finalSummary;
+        if (['Programming', 'Learning', 'Business', 'General'].includes(parsed.category)) {
+          finalCategory = parsed.category;
+        }
+        if (Array.isArray(parsed.checklist)) {
+          finalChecklist = parsed.checklist;
+        }
+      } catch {
+        // Keep the fetched title/description when the model returns bad JSON.
+        contentWarning = true;
       }
-      finalSummary = parsed.summary || finalSummary;
-      if (['Programming', 'Learning', 'Business', 'General'].includes(parsed.category)) {
-        finalCategory = parsed.category;
-      }
-      if (Array.isArray(parsed.checklist)) {
-        finalChecklist = parsed.checklist;
-      }
-    } catch {
-      // Keep the fetched title/description when the model returns bad JSON.
-      contentWarning = true;
     }
 
     // Deadline-aware: if the request is already past ~45s (slow fetch +
