@@ -6,6 +6,7 @@ import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { detectSource } from '@/lib/source-detect';
 import {
   buildBookPrintHtml,
+  countBookIdeas,
   parseBookSummary,
   parsePlainSummaryToChapters,
   stripBookChapters,
@@ -1658,7 +1659,14 @@ export default function Home() {
                                     ? 'Uygulama Adımları:'
                                     : 'Actionable Checklist:'}
                                 </span>
-                                <span className="text-purple-300/70">({item.checklist.length})</span>
+                                {/* BOOK COUNT (2026-11-27): for a book the
+                                    counter is the total ideas across all
+                                    chapters in the reader — the checklist
+                                    column only holds 12 key items, so
+                                    counting it showed 12 while the reader
+                                    showed 77. Links keep the checklist
+                                    count (they have no chapters). */}
+                                <span className="text-purple-300/70">({isUploadedFile ? countBookIdeas(bookChaptersFor(item)) : item.checklist.length})</span>
                                 {expandedChecklist[item.id] ? (
                                   <ChevronUp className="w-3.5 h-3.5 ms-auto" />
                                 ) : (

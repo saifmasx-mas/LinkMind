@@ -21,6 +21,9 @@
 // flat-text shape that produces a single generic section. Sections
 // 10-11 cover the structured chapters (envelope + plain-text fallback)
 // and section 16 the printable book document (Word -> PDF).
+// Section 20 covers the live retest findings (2026-11-27 01:02):
+// chapter titles that skip numbers, and the card counter that said
+// 12 while the reader showed 77 ideas.
 
 import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
@@ -56,6 +59,8 @@ const {
   parsePlainSummaryToChapters,
   stripBookChapters,
   buildBookPrintHtml,
+  renumberBookChapters,
+  countBookIdeas,
 } = await import(join(outDir, 'book-reader.js'));
 const { detectSource } = await import(join(outDir, 'source-detect.js'));
 
@@ -498,6 +503,113 @@ check(
   'scanned book with no chapters returns null',
   (await summarizeScannedBook(makeScannedFakeAi(JSON.stringify({ chapters: [] })), { base64: 'AAAA', mimeType: 'application/pdf', lang: 'ar' })) === null
 );
+
+// 20) Live retest findings (2026-11-27 01:02): the reader showed
+// chapter titles numbered 2, 3, 5, 7, 9, 11, 13, 15, 17, 18 (the
+// book's own section numbers, copied by Gemini into its titles),
+// and the card counter said (12) while the reader showed 77 ideas
+// (the checklist column only holds 12 key items). Renumbering must
+// happen at parse time so the already-saved live row is fixed with
+// no re-upload, and the counter must equal the reader's total.
+function makeIdeas(count, label) {
+  return Array.from({ length: count }, (_, i) => ({
+    text: `فكرة ${i + 1} من ${label}.`,
+    detail: `تفصيل الفكرة ${i + 1} من ${label} في جملتين كاملتين.`,
+  }));
+}
+const liveTitles = [
+  'القسم الثاني: اللغة الشاعرة',
+  'القسم 3',
+  'القسم 5',
+  'القسم السابع ولغة التعبير',
+  'القسم 9',
+  'القسم 11',
+  'القسم 13',
+  'القسم 15',
+  'القسم 17',
+  'القسم 18',
+];
+const liveIdeaCounts = [6, 8, 7, 8, 8, 8, 8, 8, 8, 8];
+const liveChapters = liveTitles.map((title, i) => ({
+  title,
+  ideas: makeIdeas(liveIdeaCounts[i], title),
+}));
+const livePlain = liveChapters
+  .map((ch) => `${ch.title}\n${ch.ideas.map((idea) => `• ${idea.text}`).join('\n')}`)
+  .join('\n\n');
+const liveStored = appendBookChapters(livePlain, liveChapters);
+const liveParsed = parseBookSummary(liveStored);
+const expectedLiveTitles = [
+  'القسم 1: اللغة الشاعرة',
+  'القسم 2',
+  'القسم 3',
+  'القسم 4: ولغة التعبير',
+  'القسم 5',
+  'القسم 6',
+  'القسم 7',
+  'القسم 8',
+  'القسم 9',
+  'القسم 10',
+];
+check(
+  'live titles renumber sequentially 1..10 at parse time',
+  JSON.stringify(liveParsed.chapters?.map((ch) => ch.title)) === JSON.stringify(expectedLiveTitles),
+  liveParsed.chapters?.map((ch) => ch.title).join(' | ')
+);
+check(
+  'renumbering keeps all 77 live ideas',
+  countBookIdeas(liveParsed.chapters || []) === 77,
+  `${countBookIdeas(liveParsed.chapters || [])}`
+);
+check(
+  'renumbering is idempotent',
+  JSON.stringify(renumberBookChapters(liveParsed.chapters || []).map((ch) => ch.title)) ===
+    JSON.stringify(expectedLiveTitles)
+);
+check(
+  'live display summary keeps the stored plain text',
+  stripBookChapters(liveStored) === livePlain
+);
+// Plain-text fallback (older rows): non-sequential titles renumber too.
+const oldSkipped = parsePlainSummaryToChapters(
+  'القسم 5: لغة التعبير\n• فكرة عن التعبير.\n\nالقسم 9: الشعر\n• فكرة عن الشعر.'
+);
+check(
+  'fallback titles renumber sequentially',
+  JSON.stringify(oldSkipped.map((ch) => ch.title)) ===
+    JSON.stringify(['القسم 1: لغة التعبير', 'القسم 2: الشعر']),
+  oldSkipped.map((ch) => ch.title).join(' | ')
+);
+// Titles with no embedded number are preserved (the reader's badge
+// already shows their position).
+const noNumber = parsePlainSummaryToChapters(
+  'المقدمة\n• فكرة تمهيدية.\n\nلغة التعبير\n• فكرة عن التعبير.'
+);
+check(
+  'titles without a number are kept as-is',
+  JSON.stringify(noNumber.map((ch) => ch.title)) === JSON.stringify(['المقدمة', 'لغة التعبير']),
+  noNumber.map((ch) => ch.title).join(' | ')
+);
+const englishChapters = renumberBookChapters([
+  { title: 'Section 3: Growth', ideas: makeIdeas(2, 'growth') },
+  { title: 'Chapter 7', ideas: makeIdeas(1, 'end') },
+]);
+check(
+  'english titles renumber sequentially',
+  JSON.stringify(englishChapters.map((ch) => ch.title)) ===
+    JSON.stringify(['Section 1: Growth', 'Chapter 2']),
+  englishChapters.map((ch) => ch.title).join(' | ')
+);
+const bareNumber = renumberBookChapters([
+  { title: '3. المقدمة', ideas: makeIdeas(1, 'intro') },
+  { title: 'الثاني: اللغة الشاعرة', ideas: makeIdeas(1, 'lang') },
+]);
+check(
+  'bare numbers are stripped, descriptive title kept',
+  JSON.stringify(bareNumber.map((ch) => ch.title)) === JSON.stringify(['المقدمة', 'اللغة الشاعرة']),
+  bareNumber.map((ch) => ch.title).join(' | ')
+);
+check('countBookIdeas is 0 for no chapters', countBookIdeas([]) === 0);
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) failed`);
