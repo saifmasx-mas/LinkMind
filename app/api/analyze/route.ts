@@ -5,6 +5,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import { createSupabaseAdminClient } from '@/lib/supabase-admin';
 import { fetchPublicUrl } from '@/lib/safe-fetch';
 import { resolveShortUrl } from '@/lib/short-url';
+import { hasRealLinkContent } from '@/lib/content-gate';
 import { fetchYouTubeApiMetadata, fetchYouTubeOEmbed } from '@/lib/youtube';
 import { fetchTikTokOEmbed, fetchTikTokPageMetadata } from '@/lib/tiktok';
 import { generateContentWithFallback } from '@/lib/gemini';
@@ -189,6 +190,10 @@ export async function POST(req: Request) {
     // I7: set when the page/transcript could not be fetched, so the summary
     // is based on the title alone and the user is told about it.
     let contentWarning = false;
+    // CONTENT GATE (2026-11-26): set when the generic page fetch failed
+    // outright (network error, non-2xx status, non-HTML), so the shared
+    // gate below can refuse it instead of sending the bare URL to Gemini.
+    let genericFetchFailed = false;
 
     if (isBookOrDoc) {
       finalUrl = `file://${bookType || 'pdf'}/${encodeURIComponent(bookTitle || 'Book')}`;
@@ -383,11 +388,13 @@ export async function POST(req: Request) {
             if (!bodyContent) contentWarning = true;
           } else {
             contentWarning = true;
+            genericFetchFailed = true;
             rawTitle = finalUrl;
             rawDescription = `Saved link: ${finalUrl}`;
           }
         } catch {
           contentWarning = true;
+          genericFetchFailed = true;
           rawTitle = finalUrl;
           rawDescription = `Saved web resource: ${finalUrl}`;
         }
@@ -404,36 +411,37 @@ export async function POST(req: Request) {
       // title + description (no captions) or a TikTok clip with a real
       // page description now proceeds to a metadata-based summary instead
       // of failing. Only when ALL sources fail does the 503 path trigger.
+      // General pages are refused when the fetch failed or the page
+      // brought back no real title, no real description and no body text.
       const isYouTubeLink = Boolean(videoId);
       const isTikTokLink = !videoId && lowerUrl.includes('tiktok.com');
       // LINKEDIN (2026-11-26): LinkedIn requires login, so its pages come
-      // back as a 999/login wall with no post content. The generic path
-      // has no no-content gate (unlike YouTube/TikTok above), so a failed
-      // LinkedIn fetch used to reach Gemini with the bare URL and come
-      // back as an invented summary — a saved card nobody can recognise.
-      // Fail honestly instead: 503 CONTENT_UNAVAILABLE, no save, no
-      // credit. A login wall is recognised by the fetch failing
-      // (contentWarning) or by the fetched title being the generic wall
-      // title ("LinkedIn", "Sign Up | LinkedIn", ...). A real post page —
+      // back as a 999/login wall with no post content. A real post page —
       // a specific og:title plus real body text — still proceeds.
       const isLinkedInLink =
         !videoId &&
         !isTikTokLink &&
         (lowerUrl.includes('linkedin.com') || lowerUrl.includes('lnkd.in'));
-      const linkedinWallTitle =
-        isLinkedInLink &&
-        (() => {
-          const wallTitle = rawTitle.trim().toLowerCase();
-          return (
-            wallTitle === 'linkedin' ||
-            wallTitle.startsWith('sign up') ||
-            /^(log ?in|sign ?in)( \| linkedin)?$/.test(wallTitle)
-          );
-        })();
-      const hasNoRealContent =
-        (isYouTubeLink && !hasTranscript && !hasRealTitle && !hasRealDescription) ||
-        (isTikTokLink && !hasRealTitle && !hasRealDescription) ||
-        (isLinkedInLink && (contentWarning || linkedinWallTitle));
+      // CONTENT GATE (2026-11-26): one shared decision for every link
+      // kind (lib/content-gate.ts) — it also covers general article/blog
+      // pages now: a failed fetch, or a page with no real title, no real
+      // description and no body text, is refused with 503 instead of
+      // reaching Gemini as a bare URL and coming back invented.
+      const hasNoRealContent = !hasRealLinkContent({
+        kind: isYouTubeLink
+          ? 'youtube'
+          : isTikTokLink
+            ? 'tiktok'
+            : isLinkedInLink
+              ? 'linkedin'
+              : 'general',
+        fetchFailed: genericFetchFailed,
+        hasRealTitle,
+        hasRealDescription,
+        hasTranscript,
+        bodyTextLength: bodyContent.trim().length,
+        title: rawTitle,
+      });
       if (hasNoRealContent) {
         return NextResponse.json(
           {

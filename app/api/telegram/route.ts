@@ -4,6 +4,14 @@ import * as cheerio from 'cheerio';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createSupabaseAdminClient } from '@/lib/supabase-admin';
 import { fetchPublicUrl } from '@/lib/safe-fetch';
+import { resolveShortUrl } from '@/lib/short-url';
+import {
+  fetchYouTubeApiMetadata,
+  fetchYouTubeOEmbed,
+  extractYouTubeId,
+} from '@/lib/youtube';
+import { fetchTikTokPageMetadata, fetchTikTokOEmbed } from '@/lib/tiktok';
+import { hasRealLinkContent } from '@/lib/content-gate';
 import { generateContentWithFallback } from '@/lib/gemini';
 import { deductCredit } from '@/lib/credits';
 import { checkRateLimit, pruneRateLimitBuckets } from '@/lib/rate-limit';
@@ -274,6 +282,29 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
+    // SHORT LINKS (2026-11-26): resolve lnkd.in / vm|vt.tiktok.com to the
+    // canonical URL BEFORE the duplicate check and the save, so the same
+    // link pasted short once and full once is recognised as one link, and
+    // the saved row carries a URL the library classifies correctly.
+    // On any failure the pasted URL is kept as-is.
+    let canonicalUrl = url;
+    const urlHost = url.hostname.toLowerCase();
+    if (urlHost === 'lnkd.in') {
+      const resolved = await resolveShortUrl(
+        url.toString(),
+        ['lnkd.in'],
+        (h) => h === 'linkedin.com' || h.endsWith('.linkedin.com')
+      );
+      canonicalUrl = isValidHttpUrl(resolved) ?? url;
+    } else if (urlHost === 'vm.tiktok.com' || urlHost === 'vt.tiktok.com') {
+      const resolved = await resolveShortUrl(
+        url.toString(),
+        ['vm.tiktok.com', 'vt.tiktok.com'],
+        (h) => h === 'tiktok.com' || h.endsWith('.tiktok.com')
+      );
+      canonicalUrl = isValidHttpUrl(resolved) ?? url;
+    }
+
     const { data: linkData, error: lookupError } = await admin
       .from('telegram_links')
       .select('user_id')
@@ -299,12 +330,12 @@ export async function POST(request: Request) {
       .from('bookmarks')
       .select('id')
       .eq('user_id', linkData.user_id)
-      .eq('url', url.toString())
+      .eq('url', canonicalUrl.toString())
       .maybeSingle();
     if (existingBookmark) {
       await sendTelegramMessage(
         chatId,
-        `📌 هذا الرابط محفوظ لديك مسبقاً:\n\n${url.toString()}`,
+        `📌 هذا الرابط محفوظ لديك مسبقاً:\n\n${canonicalUrl.toString()}`,
         botToken
       );
       return NextResponse.json({ ok: true });
@@ -350,35 +381,156 @@ export async function POST(request: Request) {
 
     await sendTelegramMessage(chatId, '⏳ جاري تحليل الرابط وحفظه...', botToken);
 
+    // CONTENT GATE (2026-11-26): fetch the best real source per kind —
+    // the same sources /api/analyze uses — and refuse honestly when the
+    // fetch stage brings back no real content. Previously the bot called
+    // Gemini with the bare URL on any fetch failure and saved the invented
+    // summary (and charged a credit for it).
+    const canonicalHost = canonicalUrl.hostname.toLowerCase();
+    const isYouTubeBotLink =
+      canonicalHost === 'youtube.com' ||
+      canonicalHost.endsWith('.youtube.com') ||
+      canonicalHost === 'youtu.be';
+    const isTikTokBotLink =
+      canonicalHost === 'tiktok.com' || canonicalHost.endsWith('.tiktok.com');
+    const isLinkedInBotLink =
+      canonicalHost === 'linkedin.com' ||
+      canonicalHost.endsWith('.linkedin.com') ||
+      canonicalHost === 'lnkd.in';
+
     let rawTitle = '';
     let rawDescription = '';
     let image = '';
+    let bodyText = '';
+    let tgHasRealTitle = false;
+    let tgHasRealDescription = false;
+    let tgFetchFailed = false;
 
-    if (url.hostname === 'youtube.com' || url.hostname.endsWith('.youtube.com') || url.hostname === 'youtu.be') {
-      const ytResponse = await fetch(
-        `https://www.youtube.com/oembed?url=${encodeURIComponent(url.toString())}&format=json`,
-        { signal: AbortSignal.timeout(8_000) }
-      );
-      if (ytResponse.ok) {
-        const ytData = await ytResponse.json();
-        rawTitle = ytData.title || 'YouTube Video';
-        rawDescription = `قناة: ${ytData.author_name || 'YouTube'}`;
-        image = ytData.thumbnail_url || '';
+    if (isYouTubeBotLink) {
+      const videoId = extractYouTubeId(canonicalUrl.toString());
+      if (videoId) {
+        const apiKey = process.env.YOUTUBE_API_KEY?.trim() || undefined;
+        const [apiMeta, oembed] = await Promise.all([
+          fetchYouTubeApiMetadata(videoId, apiKey),
+          fetchYouTubeOEmbed(canonicalUrl.toString()),
+        ]);
+        if (apiMeta) {
+          tgHasRealTitle = true;
+          if (apiMeta.description) tgHasRealDescription = true;
+          rawTitle = apiMeta.title;
+          rawDescription = [
+            apiMeta.channelTitle ? `Channel: ${apiMeta.channelTitle}` : '',
+            apiMeta.description,
+            apiMeta.tags.length > 0 ? `Tags: ${apiMeta.tags.join(', ')}` : '',
+            apiMeta.duration ? `Duration: ${apiMeta.duration}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n');
+        } else if (oembed) {
+          tgHasRealTitle = true;
+          rawTitle = oembed.title;
+          rawDescription = `Channel: ${oembed.authorName || 'YouTube'}`;
+        }
+        if (oembed?.thumbnailUrl) image = oembed.thumbnailUrl;
+      }
+    } else if (isTikTokBotLink) {
+      const cleanTikTokUrl = canonicalUrl.toString().split('?')[0];
+      const [pageMeta, ttOembed] = await Promise.all([
+        fetchTikTokPageMetadata(cleanTikTokUrl),
+        fetchTikTokOEmbed(cleanTikTokUrl),
+      ]);
+      if (pageMeta) {
+        tgHasRealTitle = true;
+        tgHasRealDescription = true;
+        rawTitle = pageMeta.title;
+        rawDescription = [
+          pageMeta.description,
+          pageMeta.author
+            ? `Author: ${pageMeta.authorNickname || pageMeta.author} (@${pageMeta.author})`
+            : '',
+          pageMeta.musicTitle ? `Music: ${pageMeta.musicTitle}` : '',
+          pageMeta.tags.length > 0
+            ? `Hashtags: ${pageMeta.tags.map((t) => `#${t}`).join(' ')}`
+            : '',
+          `Views: ${pageMeta.playCount}, likes: ${pageMeta.likeCount}, comments: ${pageMeta.commentCount}`,
+        ]
+          .filter(Boolean)
+          .join('\n');
+        bodyText = rawDescription;
+      } else if (ttOembed) {
+        tgHasRealTitle = true;
+        rawTitle = ttOembed.title;
+        rawDescription = `TikTok Video by ${ttOembed.authorName || ''} (@${ttOembed.authorUniqueId || ''}): ${ttOembed.title}`;
+        bodyText = rawDescription;
+      }
+      if (ttOembed?.thumbnailUrl) image = ttOembed.thumbnailUrl;
+    } else {
+      // Generic page (article, blog, LinkedIn, ...): same extraction as
+      // /api/analyze — og title/description/image plus body text.
+      try {
+        const pageResponse = await fetchPublicUrl(canonicalUrl);
+        const contentType = pageResponse.headers['content-type'] || '';
+        if (
+          pageResponse.status >= 200 &&
+          pageResponse.status < 300 &&
+          contentType.includes('text/html')
+        ) {
+          const html = pageResponse.body.toString('utf8');
+          const $ = cheerio.load(html);
+          const pageTitle =
+            $('meta[property="og:title"]').attr('content') || $('title').text() || '';
+          if (pageTitle) tgHasRealTitle = true;
+          rawTitle = pageTitle || canonicalUrl.toString();
+          rawDescription =
+            $('meta[property="og:description"]').attr('content') ||
+            $('meta[name="description"]').attr('content') ||
+            '';
+          if (rawDescription) tgHasRealDescription = true;
+          image = $('meta[property="og:image"]').attr('content') || '';
+          $('script, style, nav, footer, header').remove();
+          bodyText = $('article, main, body')
+            .find('h1, h2, h3, p, li')
+            .map((_, el) => $(el).text().replace(/\s+/g, ' ').trim())
+            .get()
+            .filter(Boolean)
+            .join('\n');
+        } else {
+          tgFetchFailed = true;
+        }
+      } catch {
+        tgFetchFailed = true;
       }
     }
 
-    if (!rawTitle) {
-      const pageResponse = await fetchPublicUrl(url);
-      if (pageResponse.status >= 200 && pageResponse.status < 300) {
-        const $ = cheerio.load(pageResponse.body.toString('utf8'));
-        rawTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || url.toString();
-        rawDescription = $('meta[property="og:description"]').attr('content') || '';
-        image = $('meta[property="og:image"]').attr('content') || '';
-      }
+    // No real content → no Gemini call, no save, no credit deduction.
+    // The user gets the same honest message the website shows.
+    if (
+      !hasRealLinkContent({
+        kind: isYouTubeBotLink
+          ? 'youtube'
+          : isTikTokBotLink
+            ? 'tiktok'
+            : isLinkedInBotLink
+              ? 'linkedin'
+              : 'general',
+        fetchFailed: tgFetchFailed,
+        hasRealTitle: tgHasRealTitle,
+        hasRealDescription: tgHasRealDescription,
+        hasTranscript: false,
+        bodyTextLength: bodyText.trim().length,
+        title: rawTitle,
+      })
+    ) {
+      await sendTelegramMessage(
+        chatId,
+        'تعذّر جلب محتوى هذا الرابط، فلم يتم إنشاء ملخص. جرّب رابطاً آخر، ولم يُخصم أي رصيد.',
+        botToken
+      );
+      return NextResponse.json({ ok: true });
     }
 
     const aiKey = process.env.GEMINI_API_KEY?.trim();
-    let finalTitle = (rawTitle || url.toString()).trim().slice(0, 200);
+    let finalTitle = (rawTitle || canonicalUrl.toString()).trim().slice(0, 200);
     let finalSummary = (rawDescription || 'Saved via Telegram Bot').trim().slice(0, 500);
     let finalCategory = 'General';
     let embedding: number[] | null = null;
@@ -387,7 +539,7 @@ export async function POST(request: Request) {
       try {
         const ai = new GoogleGenAI({ apiKey: aiKey });
         const aiResponse = await generateContentWithFallback(ai, {
-          contents: `Summarize this link in Arabic in 2 concise sentences and classify it into ONLY one of: "Programming", "Learning", "Business", "General".\nTitle: ${finalTitle}\nDesc: ${rawDescription}\nURL: ${url.toString()}`,
+          contents: `Summarize this link in Arabic in 2 concise sentences and classify it into ONLY one of: "Programming", "Learning", "Business", "General".\nTitle: ${finalTitle}\nDesc: ${rawDescription}\nContent: ${bodyText.slice(0, 14000)}\nURL: ${canonicalUrl.toString()}`,
           config: {
             responseMimeType: 'application/json',
             responseSchema: {
@@ -420,7 +572,7 @@ export async function POST(request: Request) {
 
     const { error: insertError } = await admin.from('bookmarks').insert({
       user_id: linkData.user_id,
-      url: url.toString(),
+      url: canonicalUrl.toString(),
       title: finalTitle,
       summary: finalSummary,
       category: finalCategory,

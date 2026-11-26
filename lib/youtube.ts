@@ -17,6 +17,19 @@
 
 import { fetchPublicUrl } from './safe-fetch';
 
+/**
+ * Extract the 11-character video id from any YouTube URL form
+ * (watch?v=, youtu.be/, /shorts/, /embed/). Returns null when the URL
+ * is not a YouTube video link. Shared by /api/analyze and the Telegram
+ * bot save path so both recognise the same links.
+ */
+export function extractYouTubeId(url: string): string | null {
+  const regExp =
+    /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
+  const match = url.match(regExp);
+  return match ? match[1] : null;
+}
+
 export interface YouTubeMetadata {
   title: string;
   description: string;
