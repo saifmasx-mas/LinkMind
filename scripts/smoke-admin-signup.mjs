@@ -1,18 +1,22 @@
-// Smoke test for the admin signup notification (lib/admin.ts).
+// Smoke test for the admin signup notification (lib/admin.ts) and the
+// standalone admin signups page (app/admin/signups/page.tsx).
 //
 // Run: node scripts/smoke-admin-signup.mjs
 //
 // No Supabase, no Telegram and no network needed: it tests the pure
 // helpers the two admin API routes depend on — who counts as the admin,
 // which accounts count as "just registered", and what the Telegram
-// message contains. The routes themselves are verified by `tsc --noEmit`
-// and `next build`, and the live behaviour (admin panel + Telegram
-// message) still needs a real signup on the deployed site.
+// message contains — plus static checks that the signups list lives on
+// its own admin-only page and that the main page only shows a link to
+// it after the server confirms the caller is the admin. The routes
+// themselves are verified by `tsc --noEmit` and `next build`, and the
+// live behaviour (standalone admin page + Telegram message) still needs
+// a real signup on the deployed site.
 //
 // Regression test for: the admin had to open Supabase to see who
 // registered, and got no message at all when somebody signed up.
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -122,6 +126,43 @@ check(
 );
 
 rmSync(outDir, { recursive: true, force: true });
+
+// 5. The signups list lives on its own admin-only page now — the main
+// page must not render the list, and its link to the page must only
+// ever appear after the server confirms the caller is the admin.
+const adminPagePath = 'app/admin/signups/page.tsx';
+check('standalone admin signups page exists', existsSync(adminPagePath));
+const adminPage = existsSync(adminPagePath)
+  ? readFileSync(adminPagePath, 'utf8')
+  : '';
+check(
+  'admin page loads the list from /api/admin/signups',
+  adminPage.includes("fetch('/api/admin/signups'")
+);
+check(
+  'admin page refuses non-admins on 401/403',
+  adminPage.includes('401') &&
+    adminPage.includes('403') &&
+    adminPage.includes('adminSubscribersForbidden')
+);
+check(
+  'admin page links back to the library',
+  adminPage.includes('href="/"')
+);
+const mainPage = readFileSync('app/page.tsx', 'utf8');
+check(
+  'main page no longer renders the signups list',
+  !mainPage.includes('recentSignups') && !mainPage.includes('totalSignups')
+);
+check(
+  'main page shows the admin link only after the server confirms admin',
+  mainPage.includes('{user && isAdmin &&') &&
+    mainPage.includes('href="/admin/signups"')
+);
+check(
+  'main page links to the admin page exactly once',
+  mainPage.split('href="/admin/signups"').length - 1 === 1
+);
 
 console.log(failures === 0 ? '\nAll admin signup checks passed.' : `\n${failures} check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);

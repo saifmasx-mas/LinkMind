@@ -40,8 +40,8 @@ import {
   Mail,
   ShieldCheck,
   Phone,
+  Users,
 } from 'lucide-react';
-import { Bell, RefreshCw } from 'lucide-react';
 
 interface Bookmark {
   id: string;
@@ -129,19 +129,13 @@ export default function Home() {
   const [resetSent, setResetSent] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
 
-  // ADMIN SIGNUP NOTIFY (2026-11-26): the admin panel shows the newest
-  // signups inside the site. It only ever appears when the server
-  // confirms the caller is the admin — the browser never decides that.
-  interface RecentSignup {
-    email: string;
-    created_at: string;
-  }
+  // ADMIN SIGNUPS PAGE (2026-11-26): the "المشتركون الجدد" button in the
+  // header only ever appears when the server confirms the caller is the
+  // admin — the browser never decides that. A 401/403 from
+  // /api/admin/signups simply means this account is not the admin, so the
+  // button stays completely hidden; regular users never see it at all.
+  // The list itself lives on the standalone /admin/signups page.
   const [isAdmin, setIsAdmin] = useState(false);
-  const [recentSignups, setRecentSignups] = useState<RecentSignup[]>([]);
-  const [totalSignups, setTotalSignups] = useState(0);
-  const [telegramLinked, setTelegramLinked] = useState(true);
-  const [signupsLoading, setSignupsLoading] = useState(false);
-  const [signupsError, setSignupsError] = useState(false);
   // التصميم (2026-11-24): حالة تسجيل الدخول + تأكيد الحذف + مرجع حقل الرابط.
   const [authBusy, setAuthBusy] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
@@ -309,7 +303,7 @@ export default function Home() {
     if (user) {
       fetchBookmarks();
       fetchUserProfile();
-      fetchRecentSignups();
+      checkIsAdmin();
       // ADMIN SIGNUP NOTIFY: a Google (or any OAuth) account has no
       // signUp call on this page, so a first login is detected here:
       // the auth account was created minutes ago. Guarded by
@@ -329,7 +323,6 @@ export default function Home() {
     } else {
       setBookmarks([]);
       setIsAdmin(false);
-      setRecentSignups([]);
     }
   }, [user]);
 
@@ -355,33 +348,17 @@ export default function Home() {
     }
   };
 
-  // ADMIN SIGNUP NOTIFY: load the newest signups for the admin panel.
-  // A 401/403 simply means this account is not the admin, so the panel
-  // stays hidden — no error is shown to a regular user.
-  const fetchRecentSignups = async () => {
-    setSignupsLoading(true);
-    setSignupsError(false);
+  // ADMIN SIGNUPS PAGE: ask the server whether this account is the admin.
+  // The list itself is fetched by the standalone /admin/signups page; here
+  // we only need the yes/no answer to decide whether to show the button.
+  // A 401/403 simply means this account is not the admin.
+  const checkIsAdmin = async () => {
     try {
       const headers = await authHeaders();
       const res = await fetch('/api/admin/signups', { headers });
-      if (res.status === 401 || res.status === 403) {
-        setIsAdmin(false);
-        return;
-      }
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const data = (await res.json()) as {
-        signups?: RecentSignup[];
-        total?: number;
-        telegramLinked?: boolean;
-      };
-      setIsAdmin(true);
-      setRecentSignups(Array.isArray(data.signups) ? data.signups : []);
-      setTotalSignups(typeof data.total === 'number' ? data.total : 0);
-      setTelegramLinked(data.telegramLinked !== false);
+      setIsAdmin(res.ok);
     } catch {
-      setSignupsError(true);
-    } finally {
-      setSignupsLoading(false);
+      setIsAdmin(false);
     }
   };
 
@@ -1110,6 +1087,22 @@ export default function Home() {
               ))}
             </div>
 
+            {/* ADMIN SIGNUPS PAGE (2026-11-26): entry to the standalone
+                /admin/signups page. Rendered only after the server
+                confirmed this account is the admin (isAdmin starts false
+                and only a 200 from /api/admin/signups sets it true) — it
+                is completely hidden from every regular user. */}
+            {user && isAdmin && (
+              <a
+                href="/admin/signups"
+                title={t.adminSignupsTitle}
+                className="flex items-center gap-1.5 text-xs font-semibold bg-gradient-to-r from-amber-500/20 to-yellow-500/20 hover:from-amber-500/30 hover:to-yellow-500/30 text-amber-200 border border-amber-400/40 px-3.5 py-2 min-h-9 rounded-xl transition cursor-pointer"
+              >
+                <Users className="w-3.5 h-3.5 text-amber-400" />
+                <span>{t.adminSignupsTitle}</span>
+              </a>
+            )}
+
             {user && botUsername && (
               <>
                 <button
@@ -1387,58 +1380,6 @@ export default function Home() {
                 >
                   <X className="w-4 h-4" />
                 </button>
-              </div>
-            )}
-
-            {/* ADMIN SIGNUP NOTIFY (2026-11-26): newest signups, admin
-                only. Rendered only when the server confirmed this account
-                is the admin — regular users never see this block. */}
-            {isAdmin && (
-              <div className="max-w-3xl mx-auto mb-8 bg-[#120926]/85 backdrop-blur-xl border border-amber-400/40 rounded-2xl p-4 shadow-[0_0_30px_rgba(251,191,36,0.12)]">
-                <div className="flex items-center justify-between gap-3 mb-3">
-                  <h2 className="text-sm font-extrabold text-amber-300 flex items-center gap-2">
-                    <Bell className="w-4 h-4 text-amber-400" />
-                    <span>{t.adminSignupsTitle}</span>
-                    <span className="text-xs font-bold text-purple-200/80">({totalSignups})</span>
-                  </h2>
-                  <button
-                    type="button"
-                    onClick={fetchRecentSignups}
-                    disabled={signupsLoading}
-                    className="text-xs font-bold text-amber-300 hover:text-amber-200 flex items-center gap-1 disabled:opacity-60 cursor-pointer"
-                  >
-                    <RefreshCw
-                      className={`w-3.5 h-3.5 ${signupsLoading ? 'animate-spin' : ''}`}
-                    />
-                    <span>{t.adminSignupsRefresh}</span>
-                  </button>
-                </div>
-                {!telegramLinked && (
-                  <p className="text-xs text-amber-200/90 bg-amber-500/10 border border-amber-400/30 rounded-xl px-3 py-2 mb-3">
-                    {t.adminTelegramNotLinked}
-                  </p>
-                )}
-                {signupsError ? (
-                  <p className="text-xs text-fuchsia-200">{t.adminSignupsError}</p>
-                ) : recentSignups.length === 0 ? (
-                  <p className="text-xs text-purple-200/80">{t.adminSignupsEmpty}</p>
-                ) : (
-                  <ul className="space-y-1.5 max-h-56 overflow-y-auto pe-1">
-                    {recentSignups.map((s) => (
-                      <li
-                        key={`${s.email}-${s.created_at}`}
-                        className="flex items-center justify-between gap-3 text-xs bg-[#090514]/80 border border-purple-500/15 rounded-lg px-3 py-2"
-                      >
-                        <span className="text-purple-50 font-semibold break-all">{s.email}</span>
-                        <span className="text-purple-300/80 shrink-0">
-                          {new Date(s.created_at).toLocaleString(
-                            lang === 'ar' ? 'ar' : lang === 'tr' ? 'tr' : 'en'
-                          )}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
               </div>
             )}
 
