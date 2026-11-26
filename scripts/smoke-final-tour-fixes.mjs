@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 const page = readFileSync('app/page.tsx', 'utf8');
 const translations = readFileSync('lib/translations.ts', 'utf8');
 const presentation = readFileSync('app/presentation/page.tsx', 'utf8');
+const knowledge = readFileSync('lib/support-knowledge.ts', 'utf8');
 
 let pass = 0;
 let fail = 0;
@@ -57,8 +58,10 @@ check('loadingLibrary English text is present',
   translations.includes("loadingLibrary: 'Loading your library…'"));
 
 console.log('Issue 2 — presentation page:');
-check('says 31 merged PRs', presentation.includes('31 طلب سحب مدموجة'));
-check('no longer says 25 merged PRs', !presentation.includes('25 طلب سحب'));
+check('says more than 30 merged PRs (no exact number to go stale)',
+  presentation.includes('أكثر من 30 طلب سحب مدموجة'));
+check('no exact PR count left (25 or 31)',
+  !presentation.includes('25 طلب سحب') && !presentation.includes('31 طلب سحب'));
 check('Facebook removed from step 1 source list',
   presentation.includes('الصق رابط يوتيوب أو تيك توك أو إكس أو مقال') &&
   !presentation.includes('رابط يوتيوب أو فيسبوك أو تيك توك'));
@@ -71,6 +74,14 @@ check('section 1 problem wording untouched',
   presentation.includes('الروابط والفيديوهات والكتب تتراكم وتضيع، وإعادة قراءتها أو مشاهدتها تستهلك وقتاً طويلاً، ولا يوجد مكان واحد يجمعها مع ملخصاتها.'));
 check('section 1 solution wording untouched',
   presentation.includes('مكان واحد يحفظ كل شيء مع ملخص ذكي وخطوات عملية، مع إمكانية سؤال المكتبة عن محفوظاتها بالمعنى.'));
+
+console.log('Audit #3 — support-bot knowledge base (C2):');
+check('KB says 10 free credits, not 5',
+  knowledge.includes('10 شروحات مجانية') && !knowledge.includes('5 شروحات مجانية'));
+check('KB no longer lists Facebook/Instagram as supported sources',
+  knowledge.includes('المصادر المدعومة: YouTube و TikTok و X (تويتر) والمقالات والمدونات وملفات PDF و Word.'));
+check('KB says Facebook/Instagram content is usually protected',
+  knowledge.includes('روابط Facebook و Instagram تُقبل لكن محتواهما محمي غالباً فلا يتوفر لهما ملخص كامل في أغلب الحالات'));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

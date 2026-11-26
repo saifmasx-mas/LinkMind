@@ -181,7 +181,7 @@ export default function PresentationPage() {
 
         <Section icon={Trophy} title="7 — ملخص ما تم إنجازه">
           <ul className="space-y-3 list-none">
-            <Item icon={CheckCircle2} title="الموقع مكتمل ويعمل حياً" text="على link-mind-bay.vercel.app، مع 31 طلب سحب مدموجة: إصلاحات أمان، وملخصات شاملة، وبوت تيليجرام، ووكيل دعم، وإصلاحات تصنيف." />
+            <Item icon={CheckCircle2} title="الموقع مكتمل ويعمل حياً" text="على link-mind-bay.vercel.app، مع أكثر من 30 طلب سحب مدموجة: إصلاحات أمان، وملخصات شاملة، وبوت تيليجرام، ووكيل دعم، وإصلاحات تصنيف." />
             <Item icon={Info} title="حدود معروفة بصدق" text="روابط LinkedIn لا يمكن تلخيص محتواها (جدار تسجيل دخول)؛ وملخصات الفيديو من العنوان والوصف وليست نصاً منطوقاً كاملاً؛ ولا يوجد تطبيق جوال بعد." />
           </ul>
         </Section>
