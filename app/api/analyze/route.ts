@@ -4,6 +4,7 @@ import { YoutubeTranscript } from 'youtube-transcript';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createSupabaseAdminClient } from '@/lib/supabase-admin';
 import { fetchPublicUrl } from '@/lib/safe-fetch';
+import { resolveShortUrl } from '@/lib/short-url';
 import { fetchYouTubeApiMetadata, fetchYouTubeOEmbed } from '@/lib/youtube';
 import { fetchTikTokOEmbed, fetchTikTokPageMetadata } from '@/lib/tiktok';
 import { generateContentWithFallback } from '@/lib/gemini';
@@ -47,68 +48,6 @@ function extractYouTubeId(url: string): string | null {
     /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
   const match = url.match(regExp);
   return match ? match[1] : null;
-}
-
-// فك اختصار روابط تيك توك القصيرة بمهلة 3 ثوانٍ كحد أقصى.
-// يقتصر على نطاقي vm.tiktok.com و vt.tiktok.com، ويُقبل الرابط النهائي فقط
-// إذا كان ما يزال على نطاق tiktok.com — حتى لا يتحول فك الاختصار إلى SSRF.
-//
-// SECURITY (2026-11-24 audit): the old version used fetch() with
-// redirect: 'follow' and only checked the destination AFTER the request
-// had already been made. Redirects are now followed MANUALLY, one hop at
-// a time: each Location is validated (must stay on *.tiktok.com) BEFORE
-// the next request is made, at most 3 hops, and the response body is never
-// read — only the final URL is returned. The actual page fetch afterwards
-// still goes through fetchPublicUrl.
-async function resolveShortUrl(url: string): Promise<string> {
-  let host = '';
-  try {
-    host = new URL(url).hostname.toLowerCase();
-  } catch {
-    return url;
-  }
-  if (host !== 'vm.tiktok.com' && host !== 'vt.tiktok.com') return url;
-  let current = url;
-  for (let hop = 0; hop < 3; hop++) {
-    let res: Response;
-    try {
-      res = await fetch(current, {
-        method: 'GET',
-        // Manual redirects: validate each hop before following it.
-        redirect: 'manual',
-        signal: AbortSignal.timeout(3000),
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-        },
-      });
-    } catch {
-      return url;
-    }
-    const location = res.headers.get('location');
-    const isRedirect = [301, 302, 303, 307, 308].includes(res.status);
-    if (!isRedirect || !location) {
-      // Not a redirect: `current` is the final URL. Discard the body.
-      try {
-        await res.body?.cancel();
-      } catch {
-        // Body already consumed or unavailable; nothing to do.
-      }
-      return current;
-    }
-    let next: URL;
-    try {
-      next = new URL(location, current);
-    } catch {
-      return url;
-    }
-    const nextHost = next.hostname.toLowerCase();
-    if (nextHost !== 'tiktok.com' && !nextHost.endsWith('.tiktok.com')) {
-      return url;
-    }
-    current = next.toString();
-  }
-  return current;
 }
 
 export async function POST(req: Request) {
@@ -254,6 +193,20 @@ export async function POST(req: Request) {
     if (isBookOrDoc) {
       finalUrl = `file://${bookType || 'pdf'}/${encodeURIComponent(bookTitle || 'Book')}`;
     } else {
+      // LINKEDIN SHORT LINKS (2026-11-26): LinkedIn shares from the app
+      // come as lnkd.in links. Resolve them to the canonical linkedin.com
+      // URL BEFORE the duplicate check, so the same post pasted as a short
+      // link twice (or once short, once full) is recognised as the same
+      // link, and the saved row carries a URL the library classifies as
+      // LinkedIn. On any failure the pasted URL is kept as-is.
+      if (finalUrl.toLowerCase().includes('lnkd.in')) {
+        finalUrl = await resolveShortUrl(
+          finalUrl,
+          ['lnkd.in'],
+          (h) => h === 'linkedin.com' || h.endsWith('.linkedin.com')
+        );
+      }
+
       // I5: refuse to analyse a link the user already saved.
       const { data: existing } = await admin
         .from('bookmarks')
@@ -335,7 +288,11 @@ export async function POST(req: Request) {
         isVideoOrSocialLink = true;
         let targetTikTokUrl = finalUrl;
         if (lowerUrl.includes('vm.tiktok.com') || lowerUrl.includes('vt.tiktok.com')) {
-          targetTikTokUrl = await resolveShortUrl(finalUrl);
+          targetTikTokUrl = await resolveShortUrl(
+            finalUrl,
+            ['vm.tiktok.com', 'vt.tiktok.com'],
+            (h) => h === 'tiktok.com' || h.endsWith('.tiktok.com')
+          );
         }
         const cleanTikTokUrl = targetTikTokUrl.split('?')[0];
 
@@ -449,9 +406,34 @@ export async function POST(req: Request) {
       // of failing. Only when ALL sources fail does the 503 path trigger.
       const isYouTubeLink = Boolean(videoId);
       const isTikTokLink = !videoId && lowerUrl.includes('tiktok.com');
+      // LINKEDIN (2026-11-26): LinkedIn requires login, so its pages come
+      // back as a 999/login wall with no post content. The generic path
+      // has no no-content gate (unlike YouTube/TikTok above), so a failed
+      // LinkedIn fetch used to reach Gemini with the bare URL and come
+      // back as an invented summary — a saved card nobody can recognise.
+      // Fail honestly instead: 503 CONTENT_UNAVAILABLE, no save, no
+      // credit. A login wall is recognised by the fetch failing
+      // (contentWarning) or by the fetched title being the generic wall
+      // title ("LinkedIn", "Sign Up | LinkedIn", ...). A real post page —
+      // a specific og:title plus real body text — still proceeds.
+      const isLinkedInLink =
+        !videoId &&
+        !isTikTokLink &&
+        (lowerUrl.includes('linkedin.com') || lowerUrl.includes('lnkd.in'));
+      const linkedinWallTitle =
+        isLinkedInLink &&
+        (() => {
+          const wallTitle = rawTitle.trim().toLowerCase();
+          return (
+            wallTitle === 'linkedin' ||
+            wallTitle.startsWith('sign up') ||
+            /^(log ?in|sign ?in)( \| linkedin)?$/.test(wallTitle)
+          );
+        })();
       const hasNoRealContent =
         (isYouTubeLink && !hasTranscript && !hasRealTitle && !hasRealDescription) ||
-        (isTikTokLink && !hasRealTitle && !hasRealDescription);
+        (isTikTokLink && !hasRealTitle && !hasRealDescription) ||
+        (isLinkedInLink && (contentWarning || linkedinWallTitle));
       if (hasNoRealContent) {
         return NextResponse.json(
           {

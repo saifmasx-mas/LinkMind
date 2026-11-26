@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { translations, Language } from '@/lib/translations';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { detectSource } from '@/lib/source-detect';
 import { User } from '@supabase/supabase-js';
 import OrbitalHub, { SourceFilter } from '@/components/OrbitalHub';
 import PricingModal from '@/components/PricingModal';
@@ -233,36 +234,6 @@ export default function Home() {
     return session
       ? { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }
       : { 'Content-Type': 'application/json' };
-  };
-
-  // التعرف التلقائي على مصدر الرابط أو الكتاب المرفوع لأيقونات المجرة
-  const detectSource = (url: string): SourceFilter => {
-    const u = url.toLowerCase();
-    if (u.includes('youtube.com') || u.includes('youtu.be')) return 'youtube';
-    if (
-      u.startsWith('file://pdf/') ||
-      u.endsWith('.pdf') ||
-      u.includes('/pdf') ||
-      u.includes('drive.google.com')
-    )
-      return 'pdf';
-    if (
-      u.startsWith('file://word/') ||
-      u.startsWith('file://doc/') ||
-      u.endsWith('.doc') ||
-      u.endsWith('.docx') ||
-      u.includes('docs.google.com')
-    )
-      return 'word';
-    if (u.includes('facebook.com') || u.includes('fb.watch') || u.includes('fb.com'))
-      return 'facebook';
-    if (u.includes('google.com') || u.includes('goo.gl')) return 'google';
-    if (u.includes('instagram.com')) return 'instagram';
-    if (u.includes('tiktok.com')) return 'tiktok';
-    if (u.includes('linkedin.com')) return 'linkedin';
-    if (u.includes('x.com') || u.includes('twitter.com')) return 'x';
-    if (u.includes('t.me') || u.includes('telegram')) return 'telegram';
-    return 'all';
   };
 
   const sourceCounts: Record<SourceFilter, number> = {
@@ -643,9 +614,14 @@ export default function Home() {
       }
 
       if (res.ok) {
+        // LINKEDIN SHORT LINKS (2026-11-26): store the URL the server
+        // returns, not the raw pasted text — the server resolves short
+        // links (lnkd.in -> linkedin.com) before the duplicate check, so
+        // the saved row carries the canonical URL the library classifies
+        // correctly. The book flow below already stores data.url.
         const { error: dbError } = await supabase.from('bookmarks').insert({
           user_id: user.id,
-          url: urlInput.trim(),
+          url: data.url || urlInput.trim(),
           title: data.title,
           summary: data.summary,
           category: data.category,
