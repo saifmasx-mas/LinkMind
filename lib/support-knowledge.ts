@@ -100,6 +100,39 @@ export function detectPurchaseIntent(text: string): boolean {
   return PURCHASE_DECISION_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
+// H3 (audit #2, 2026-11-27): a message that contains a link is not
+// automatically a save request — it can be a question ABOUT the link
+// ("what is this link?", "ما هذا الرابط؟"). The save path must not
+// swallow those. The text left after removing the URL decides: a bare
+// link (or a link plus a save command such as "احفظ هذا") is a save;
+// a question mark, a question word at the start, or an explicit
+// "what is this" phrase makes it a question. Bare "ما" alone is NOT
+// a marker — it also opens exclamations ("ما شاء الله").
+export function isQuestionAboutLink(text: string, url: string): boolean {
+  const rest = text
+    .replace(url, '')
+    .replace(/https?:\/\/[^\s<>]+/gi, '')
+    .trim();
+  if (!rest) return false;
+  if (/[؟?]/.test(rest)) return true;
+  if (/^(هل|ماذا|كيف|لماذا|متى|أين|من|كم|شو|ايش|وش|ليش)\s/.test(rest)) return true;
+  if (
+    /^(what|how|why|when|where|who|which|whose|is|are|was|were|can|could|does|do|did|ne|nedir|nasıl|neden|niçin|kim|nerede|hangi)\b/i.test(
+      rest
+    )
+  ) {
+    return true;
+  }
+  if (
+    /(ما هذا|ما هو|ما هي|ما هى|what is|what's|what are|how much|how to|tell me about|أخبرني|اخبرني)/i.test(
+      rest
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 const PURCHASE_HANDOFF_REPLIES: Record<SupportLanguage, string> = {
   ar: `تمام، وصل طلبك! صاحب الموقع سيتواصل معك شخصياً لإتمام الدفع وتفعيل باقتك.\n\nويمكنك أيضاً مراسلته مباشرة على واتساب: ${WHATSAPP_LINK}`,
   en: `Got it! The site owner will contact you personally to complete the payment and activate your plan.\n\nYou can also reach him directly on WhatsApp: ${WHATSAPP_LINK}`,
@@ -120,6 +153,21 @@ const SUPPORT_FALLBACK_REPLIES: Record<SupportLanguage, string> = {
 /** Reply when the AI answer is unavailable (no key, or Gemini failed). */
 export function buildSupportFallbackReply(language: SupportLanguage): string {
   return SUPPORT_FALLBACK_REPLIES[language];
+}
+
+// C2 (audit #2, 2026-11-27): the honest reply when a link cannot be
+// summarised because the AI service is down or unconfigured. The bot
+// sends this and saves NOTHING and deducts NOTHING — the Telegram
+// mirror of the web path's 503 AI_UNAVAILABLE.
+const AI_UNAVAILABLE_REPLIES: Record<SupportLanguage, string> = {
+  ar: 'عذراً، خدمة الذكاء الاصطناعي غير متاحة حالياً، فلم يتم إنشاء ملخص ولا حفظ الرابط. حاول لاحقاً، ولم يُخصم أي رصيد.',
+  en: 'Sorry, the AI service is unavailable right now, so no summary was created and the link was not saved. Please try again later; no credit was deducted.',
+  tr: 'Üzgünüz, yapay zeka hizmeti şu anda kullanılamıyor, bu yüzden özet oluşturulmadı ve bağlantı kaydedilmedi. Lütfen daha sonra tekrar deneyin; kredi düşülmedi.',
+};
+
+/** Reply when a link cannot be saved because the AI service is down. */
+export function buildAiUnavailableReply(language: SupportLanguage): string {
+  return AI_UNAVAILABLE_REPLIES[language];
 }
 
 /**
