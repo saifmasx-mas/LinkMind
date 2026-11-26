@@ -28,6 +28,8 @@ import {
   Check,
   Zap,
   Crown,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 interface Bookmark {
@@ -99,6 +101,9 @@ export default function Home() {
     }
   });
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // البطاقات المضغوطة: الملخص والقائمة مطويان افتراضياً، ويُفتحان بزر «المزيد».
+  const [expandedSummary, setExpandedSummary] = useState<Record<string, boolean>>({});
+  const [expandedChecklist, setExpandedChecklist] = useState<Record<string, boolean>>({});
   const [notice, setNotice] = useState('');
   const [telegramLinking, setTelegramLinking] = useState(false);
   const [resetSent, setResetSent] = useState(false);
@@ -1368,13 +1373,13 @@ export default function Home() {
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 {filteredBookmarks.map((item) => {
                   const isUploadedFile = item.url.startsWith('file://');
                   return (
                     <div
                       key={item.id}
-                      className="bg-[#120926]/85 backdrop-blur-xl border border-purple-500/25 rounded-2xl overflow-hidden flex flex-col justify-between hover:border-amber-400/50 transition duration-300 shadow-[0_8px_30px_rgba(15,5,36,0.7)] group"
+                      className="bg-[#120926]/85 backdrop-blur-xl border border-purple-500/25 rounded-xl overflow-hidden flex flex-col justify-between hover:border-amber-400/50 transition duration-300 shadow-[0_8px_30px_rgba(15,5,36,0.7)] group"
                     >
                       <div>
                         {item.image_url && (
@@ -1382,30 +1387,74 @@ export default function Home() {
                             <img
                               src={item.image_url}
                               alt={item.title}
-                              className="w-full h-40 object-cover border-b border-purple-500/25 group-hover:scale-105 transition duration-500"
+                              className="w-full h-24 object-cover border-b border-purple-500/25 group-hover:scale-105 transition duration-500"
                             />
                             <div className="absolute inset-0 bg-gradient-to-t from-[#120926] via-transparent to-transparent opacity-60" />
                           </div>
                         )}
-                        <div className="p-5">
-                          <div className="flex items-center justify-between mb-2.5">
-                            <span className="text-xs font-bold px-3 py-0.5 rounded-full bg-gradient-to-r from-purple-600/30 to-fuchsia-600/30 text-amber-300 border border-fuchsia-500/30">
+                        <div className="p-3.5">
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600/30 to-fuchsia-600/30 text-amber-300 border border-fuchsia-500/30">
                               {t.categories[item.category as keyof typeof t.categories] ||
                                 item.category}
                             </span>
-                            <span className="text-xs text-purple-300/80">{item.created_at}</span>
+                            <span className="text-[11px] text-purple-300/80">{item.created_at}</span>
                           </div>
-                          <h2 className="font-bold text-lg text-white mb-2 line-clamp-2 group-hover:text-amber-200 transition">
+                          <h2 className="font-bold text-base text-white mb-1 line-clamp-2 group-hover:text-amber-200 transition">
                             {item.title}
                           </h2>
-                          <p className="text-sm text-purple-200/85 leading-relaxed mb-4 line-clamp-4">
+                          <p
+                            className={`text-[13px] text-purple-200/85 leading-snug ${
+                              expandedSummary[item.id] ? '' : 'line-clamp-2'
+                            }`}
+                          >
                             {item.summary}
                           </p>
+                          {item.summary.length > 160 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedSummary((prev) => ({
+                                  ...prev,
+                                  [item.id]: !prev[item.id],
+                                }))
+                              }
+                              aria-expanded={!!expandedSummary[item.id]}
+                              className="mt-1 text-xs font-bold text-amber-300 hover:text-amber-200 flex items-center gap-0.5 cursor-pointer"
+                            >
+                              {expandedSummary[item.id]
+                                ? lang === 'ar'
+                                  ? 'عرض أقل'
+                                  : lang === 'tr'
+                                  ? 'Daha az'
+                                  : 'Show less'
+                                : lang === 'ar'
+                                ? 'المزيد'
+                                : lang === 'tr'
+                                ? 'Daha fazla'
+                                : 'Show more'}
+                              {expandedSummary[item.id] ? (
+                                <ChevronUp className="w-3.5 h-3.5" />
+                              ) : (
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          )}
 
-                          {/* قائمة الخطوات العملية والأفكار التفاعلية */}
+                          {/* قائمة الخطوات العملية والأفكار التفاعلية — مطوية افتراضياً لتصغير البطاقة */}
                           {item.checklist && item.checklist.length > 0 && (
-                            <div className="mt-3 pt-3 border-t border-purple-500/20">
-                              <p className="text-xs font-bold text-amber-400 mb-2.5 flex items-center gap-1.5">
+                            <div className="mt-2 pt-2 border-t border-purple-500/20">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedChecklist((prev) => ({
+                                    ...prev,
+                                    [item.id]: !prev[item.id],
+                                  }))
+                                }
+                                aria-expanded={!!expandedChecklist[item.id]}
+                                className="w-full text-xs font-bold text-amber-400 mb-1.5 flex items-center gap-1.5 cursor-pointer"
+                              >
                                 <CheckSquare className="w-3.5 h-3.5 text-amber-400" />
                                 <span>
                                   {isUploadedFile
@@ -1418,8 +1467,15 @@ export default function Home() {
                                     ? 'Uygulama Adımları:'
                                     : 'Actionable Checklist:'}
                                 </span>
-                              </p>
-                              <ul className="space-y-2 max-h-56 overflow-y-auto pe-1">
+                                <span className="text-purple-300/70">({item.checklist.length})</span>
+                                {expandedChecklist[item.id] ? (
+                                  <ChevronUp className="w-3.5 h-3.5 ms-auto" />
+                                ) : (
+                                  <ChevronDown className="w-3.5 h-3.5 ms-auto" />
+                                )}
+                              </button>
+                              {expandedChecklist[item.id] && (
+                              <ul className="space-y-1.5 max-h-40 overflow-y-auto pe-1">
                                 {item.checklist.map((step, idx) => {
                                   const isDone = !!completedSteps[`${item.id}-${idx}`];
                                   return (
@@ -1435,29 +1491,30 @@ export default function Home() {
                                           toggleStep(item.id, idx);
                                         }
                                       }}
-                                      className={`flex items-start gap-2 text-xs p-2.5 rounded-xl cursor-pointer transition border ${
+                                      className={`flex items-start gap-2 text-xs p-1.5 rounded-lg cursor-pointer transition border ${
                                         isDone
                                           ? 'bg-emerald-950/30 border-emerald-500/20 text-purple-300/40 line-through'
                                           : 'bg-[#090514]/80 border-purple-500/15 text-purple-50 hover:border-amber-400/40'
                                       }`}
                                     >
                                       {isDone ? (
-                                        <CheckSquare className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                                        <CheckSquare className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
                                       ) : (
-                                        <Square className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                                        <Square className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
                                       )}
                                       <span className="leading-relaxed">{step}</span>
                                     </li>
                                   );
                                 })}
                               </ul>
+                              )}
                             </div>
                           )}
                         </div>
                       </div>
 
                       {/* شريط الإجراءات والتصدير */}
-                      <div className="px-4 py-3 bg-[#090514]/90 border-t border-purple-500/20 flex items-center justify-between gap-2">
+                      <div className="px-3 py-2 bg-[#090514]/90 border-t border-purple-500/20 flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
                           {isUploadedFile ? (
                             <span className="text-xs font-bold text-fuchsia-300 flex items-center gap-1">
@@ -1481,7 +1538,7 @@ export default function Home() {
                               <button
                                 onClick={() => handleCopyNotion(item)}
                                 title="Copy Markdown for Notion"
-                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2.5 py-1 min-h-9 rounded-lg flex items-center gap-1 transition cursor-pointer"
+                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2 py-1 min-h-8 rounded-lg flex items-center gap-1 transition cursor-pointer"
                               >
                                 {copiedId === item.id ? (
                                   <Check className="w-3 h-3 text-emerald-400" />
@@ -1494,7 +1551,7 @@ export default function Home() {
                               <button
                                 onClick={() => handleExportPDF(item)}
                                 title="Export as PDF"
-                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2.5 py-1 min-h-9 rounded-lg flex items-center gap-1 transition cursor-pointer"
+                                className="text-xs bg-purple-900/50 hover:bg-purple-800/70 text-purple-100 border border-purple-500/25 px-2 py-1 min-h-8 rounded-lg flex items-center gap-1 transition cursor-pointer"
                               >
                                 <FileText className="w-3 h-3 text-amber-400" />
                                 <span>PDF</span>
@@ -1507,7 +1564,7 @@ export default function Home() {
                           onClick={() => setPendingDeleteId(item.id)}
                           aria-label={`${t.deleteBtn}: ${item.title}`}
                           title={t.deleteBtn}
-                          className="min-w-11 min-h-11 px-2 text-xs text-fuchsia-400/80 hover:text-fuchsia-300 flex items-center justify-center gap-1 cursor-pointer"
+                          className="min-w-9 min-h-9 px-2 text-xs text-fuchsia-400/80 hover:text-fuchsia-300 flex items-center justify-center gap-1 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
