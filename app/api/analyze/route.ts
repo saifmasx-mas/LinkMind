@@ -6,6 +6,7 @@ import { createSupabaseAdminClient } from '@/lib/supabase-admin';
 import { fetchPublicUrl } from '@/lib/safe-fetch';
 import { resolveShortUrl } from '@/lib/short-url';
 import { hasRealLinkContent } from '@/lib/content-gate';
+import { extractArticleText } from '@/lib/article-extract';
 import { fetchYouTubeApiMetadata, fetchYouTubeOEmbed } from '@/lib/youtube';
 import { fetchTikTokOEmbed, fetchTikTokPageMetadata } from '@/lib/tiktok';
 import { generateContentWithFallback } from '@/lib/gemini';
@@ -362,8 +363,28 @@ export async function POST(req: Request) {
         // C4: all public page fetches go through fetchPublicUrl, which blocks
         // private/loopback/cloud-metadata addresses, pins DNS, limits the
         // response to 1 MB and times out after 8 seconds.
+        // BLOGGER FETCH FIX (2026-11-26): the first fetch attempt uses the
+        // default LinkMindBot UA. Some hosts (Blogger included) serve bot
+        // checks or thin pages to unknown bots, so a failed first attempt
+        // is retried once with an ordinary browser UA before giving up.
+        // Every failure is logged with the URL and reason — the old code
+        // swallowed the error silently, so a live fetch failure (like the
+        // Blogger article on 2026-11-26) could only be guessed at.
         try {
-          const res = await fetchPublicUrl(finalUrl);
+          let res;
+          try {
+            res = await fetchPublicUrl(finalUrl);
+          } catch (firstError) {
+            console.error(
+              'Page fetch failed with LinkMindBot UA, retrying with browser UA:',
+              finalUrl,
+              firstError instanceof Error ? firstError.message : String(firstError)
+            );
+            res = await fetchPublicUrl(finalUrl, 0, {
+              userAgent:
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            });
+          }
           const contentType = res.headers['content-type'] || '';
           if (res.status >= 200 && res.status < 300 && contentType.includes('text/html')) {
             const html = res.body.toString('utf8');
@@ -380,27 +401,36 @@ export async function POST(req: Request) {
               '';
             image = $('meta[property="og:image"]').attr('content') || '';
 
-            $('script, style, nav, footer, header').remove();
-            // FULL-ARTICLE SUMMARY: keep one line per element (headings
-            // stay on their own lines) so the section splitter in
-            // lib/book-summary.ts can find the article's own headings,
-            // and keep up to the full-text cap instead of 14,000 chars —
-            // the short single-call path below slices its own copy.
-            bodyContent = $('article, main, body')
-              .find('h1, h2, h3, p, li')
-              .map((_, el) => $(el).text().replace(/\s+/g, ' ').trim())
-              .get()
-              .filter(Boolean)
-              .join('\n')
-              .slice(0, MAX_BOOK_TEXT_CHARS);
+            // FULL-ARTICLE SUMMARY: extractArticleText keeps one line per
+            // element (headings stay on their own lines) so the section
+            // splitter in lib/book-summary.ts can find the article's own
+            // headings, and falls back to the article container text and
+            // JSON-LD articleBody when a template (many Blogger themes)
+            // puts the body in <div>s instead of <p> tags. Keep up to the
+            // full-text cap instead of 14,000 chars — the short
+            // single-call path below slices its own copy.
+            bodyContent = extractArticleText(html).slice(0, MAX_BOOK_TEXT_CHARS);
             if (!bodyContent) contentWarning = true;
           } else {
+            console.error(
+              'Page fetch returned unusable response:',
+              finalUrl,
+              'status',
+              res.status,
+              'content-type',
+              contentType
+            );
             contentWarning = true;
             genericFetchFailed = true;
             rawTitle = finalUrl;
             rawDescription = `Saved link: ${finalUrl}`;
           }
-        } catch {
+        } catch (error) {
+          console.error(
+            'Page fetch failed:',
+            finalUrl,
+            error instanceof Error ? error.message : String(error)
+          );
           contentWarning = true;
           genericFetchFailed = true;
           rawTitle = finalUrl;
