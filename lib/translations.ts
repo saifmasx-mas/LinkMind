@@ -71,6 +71,11 @@ export const translations = {
     adminTelegramNotLinked:
       'اربط Telegram من الزر في الأعلى ليصلك إشعار فوري عند كل تسجيل جديد.',
     duplicateLink: 'هذا الرابط محفوظ لديك مسبقاً.',
+    invalidLink: 'الرابط غير صحيح — تأكّد أنه يبدأ بـ http:// أو https:// ثم حاول مجدداً.',
+    linkUnreachable:
+      'هذا الرابط لا يعمل أو غير متاح حالياً — تحقّق من الرابط وحاول مجدداً.',
+    betaContentBadge: 'محتوى تجريبي',
+    betaContentNote: 'تفاصيل هذا المحتوى قد تتغير مع التحديثات.',
     contentWarning:
       'تعذّر جلب محتوى الرابط، فالملخص مبني على العنوان فقط — قد يكون ناقصاً.',
     paymentUnavailable:
@@ -82,6 +87,10 @@ export const translations = {
     footerPrivacyText:
       'يحفظ LinkMind روابطك وكتبك وملخصاتها في حسابك الخاص فقط، ولا يشاركها مع أي شخص أو جهة أخرى. بياناتك تبقى لك وحدك.',
     footerPrivacyClose: 'فهمت',
+    footerContactWhatsApp: 'راسلني على واتساب',
+    footerContactPhone: 'اتصل بي',
+    footerContactEmail: 'راسلني بالبريد',
+    footerContactClose: 'إغلاق',
     footerPresentation: 'العرض التقديمي',
     footerCopyright: '© 2026 LinkMind — جميع الحقوق محفوظة',
     footerFollow: 'تابعنا على',
@@ -163,6 +172,12 @@ export const translations = {
     adminTelegramNotLinked:
       'Her yeni kayıtta anında bildirim almak için yukarıdaki düğmeden Telegram’ı bağlayın.',
     duplicateLink: 'Bu bağlantı zaten kütüphanenizde kayıtlı.',
+    invalidLink:
+      'Bağlantı geçersiz — http:// veya https:// ile başladığından emin olun ve tekrar deneyin.',
+    linkUnreachable:
+      'Bu bağlantı çalışmıyor veya şu anda kullanılamıyor — bağlantıyı kontrol edip tekrar deneyin.',
+    betaContentBadge: 'Beta içerik',
+    betaContentNote: 'Bu içeriğin ayrıntıları güncellemelerle değişebilir.',
     contentWarning:
       'Bağlantının içeriği alınamadı, bu yüzden özet yalnızca başlığa dayanıyor — eksik olabilir.',
     paymentUnavailable:
@@ -174,6 +189,10 @@ export const translations = {
     footerPrivacyText:
       'LinkMind, bağlantılarınızı, kitaplarınızı ve özetlerinizi yalnızca kendi hesabınızda saklar ve hiç kimseyle paylaşmaz. Verileriniz yalnızca size aittir.',
     footerPrivacyClose: 'Anladım',
+    footerContactWhatsApp: 'WhatsApp ile yazın',
+    footerContactPhone: 'Beni arayın',
+    footerContactEmail: 'E-posta gönderin',
+    footerContactClose: 'Kapat',
     footerPresentation: 'Sunum',
     footerCopyright: '© 2026 LinkMind — Tüm hakları saklıdır',
     footerFollow: 'Bizi takip edin',
@@ -256,6 +275,12 @@ export const translations = {
     adminTelegramNotLinked:
       'Connect Telegram from the button above to get an instant notification for every new signup.',
     duplicateLink: 'This link is already saved in your library.',
+    invalidLink:
+      'This link is invalid — make sure it starts with http:// or https:// and try again.',
+    linkUnreachable:
+      'This link does not work or is unavailable right now — check the link and try again.',
+    betaContentBadge: 'Beta content',
+    betaContentNote: 'Details of this content may change with updates.',
     contentWarning:
       'The link content could not be fetched, so the summary is based on the title only — it may be incomplete.',
     paymentUnavailable:
@@ -267,6 +292,10 @@ export const translations = {
     footerPrivacyText:
       'LinkMind stores your links, books and their summaries in your own account only, and never shares them with anyone else. Your data stays yours alone.',
     footerPrivacyClose: 'Got it',
+    footerContactWhatsApp: 'Message me on WhatsApp',
+    footerContactPhone: 'Call me',
+    footerContactEmail: 'Email me',
+    footerContactClose: 'Close',
     footerPresentation: 'Presentation',
     footerCopyright: '© 2026 LinkMind — All rights reserved',
     footerFollow: 'Follow us on',

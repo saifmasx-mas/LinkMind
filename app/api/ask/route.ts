@@ -96,9 +96,14 @@ export async function POST(req: Request) {
     }
 
     if (!profile) {
+      // NEW-ACCOUNT CREDITS (2026-11-27): 10 free credits for the DEMO
+      // phase, so a committee member can try the site properly.
+      // Revert to 5 at the official launch (own domain + payment
+      // gateway). Existing balances are untouched — this only sets
+      // the starting balance of a brand-new account.
       const { data: newProfile, error: insertError } = await admin
         .from('user_profiles')
-        .insert({ user_id: userId, credits: 5, plan_type: 'free' })
+        .insert({ user_id: userId, credits: 10, plan_type: 'free' })
         .select('credits, plan_type')
         .single();
       if (insertError || !newProfile) {

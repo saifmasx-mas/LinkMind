@@ -88,6 +88,13 @@ export interface FetchPublicUrlOptions {
   // Per-domain Accept override (e.g. application/json for the YouTube
   // Data API). Defaults to the HTML accept list below.
   accept?: string;
+  // FAST LINK CHECK (2026-11-27): the pre-save reachability probe
+  // (lib/link-check.ts) sends a HEAD request with a short timeout and
+  // no redirect following — a 3xx already proves the host answered.
+  // Defaults: GET, 8s timeout, redirects followed.
+  method?: string;
+  timeoutMs?: number;
+  followRedirects?: boolean;
 }
 
 export async function fetchPublicUrl(
@@ -130,6 +137,7 @@ export async function fetchPublicUrl(
     const req = request(
       url,
       {
+        method: options.method ?? 'GET',
         lookup: pinnedLookup,
         headers: {
           Accept: options.accept ?? 'text/html,application/xhtml+xml',
@@ -141,7 +149,11 @@ export async function fetchPublicUrl(
       (res) => {
         const status = res.statusCode ?? 0;
         const location = res.headers.location;
-        if ([301, 302, 303, 307, 308].includes(status) && location) {
+        if (
+          [301, 302, 303, 307, 308].includes(status) &&
+          location &&
+          options.followRedirects !== false
+        ) {
           res.resume();
           if (redirects >= MAX_REDIRECTS) {
             fail(new Error('Too many redirects'));
@@ -191,7 +203,7 @@ export async function fetchPublicUrl(
       }
     );
 
-    req.setTimeout(8_000, () => req.destroy(new Error('Request timed out')));
+    req.setTimeout(options.timeoutMs ?? 8_000, () => req.destroy(new Error('Request timed out')));
     req.on('error', fail);
     req.end();
   });

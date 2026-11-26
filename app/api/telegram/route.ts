@@ -12,6 +12,7 @@ import {
 } from '@/lib/youtube';
 import { fetchTikTokPageMetadata, fetchTikTokOEmbed } from '@/lib/tiktok';
 import { hasRealLinkContent } from '@/lib/content-gate';
+import { unwrapRedirectUrl } from '@/lib/redirect-unwrap';
 import { generateContentWithFallback } from '@/lib/gemini';
 import { deductCredit } from '@/lib/credits';
 import { checkRateLimit, pruneRateLimitBuckets } from '@/lib/rate-limit';
@@ -300,8 +301,14 @@ export async function POST(request: Request) {
     // link pasted short once and full once is recognised as one link, and
     // the saved row carries a URL the library classifies correctly.
     // On any failure the pasted URL is kept as-is.
-    let canonicalUrl = url;
-    const urlHost = url.hostname.toLowerCase();
+    // REDIRECT WRAPPERS (2026-11-27): a link pasted from Facebook/Meta
+    // arrives wrapped (l.meta.ai/?u=...), and the saved card then
+    // points at Meta's redirect shim instead of the article — clicking
+    // it stays about:blank. Unwrap it BEFORE the short-link resolve,
+    // the duplicate check and the fetch, so the saved row carries the
+    // direct URL — exactly like the website path in /api/analyze.
+    let canonicalUrl = isValidHttpUrl(unwrapRedirectUrl(url.toString())) ?? url;
+    const urlHost = canonicalUrl.hostname.toLowerCase();
     if (urlHost === 'lnkd.in') {
       const resolved = await resolveShortUrl(
         url.toString(),
@@ -369,9 +376,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
     if (!tgProfile) {
+      // NEW-ACCOUNT CREDITS (2026-11-27): 10 free credits for the DEMO
+      // phase, so a committee member can try the site properly.
+      // Revert to 5 at the official launch (own domain + payment
+      // gateway). Existing balances are untouched — this only sets
+      // the starting balance of a brand-new account.
       const { data: newProfile, error: insertError } = await admin
         .from('user_profiles')
-        .insert({ user_id: linkData.user_id, credits: 5, plan_type: 'free' })
+        .insert({ user_id: linkData.user_id, credits: 10, plan_type: 'free' })
         .select('credits, plan_type')
         .single();
       if (insertError || !newProfile) {
