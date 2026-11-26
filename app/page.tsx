@@ -83,8 +83,11 @@ function cosineSimilarity(vecA?: number[], vecB?: number[]): number {
 // (blogspot.com or blogger.com) shows the orange Blogger badge on its
 // library card, so the source is visible at a glance — even when the
 // article has no cover image of its own.
+// (2026-11-27): one definition of "is Blogger" — detectSource in
+// lib/source-detect.ts, which the counts and the filter also use, so
+// the badge, the count and the filter can never disagree again.
 function isBloggerUrl(url: string): boolean {
-  return /blogspot\.|blogger\.com/i.test(url);
+  return detectSource(url) === 'blogger';
 }
 
 export default function Home() {
@@ -263,6 +266,11 @@ export default function Home() {
     linkedin: bookmarks.filter((b) => detectSource(b.url) === 'linkedin').length,
     x: bookmarks.filter((b) => detectSource(b.url) === 'x').length,
     telegram: bookmarks.filter((b) => detectSource(b.url) === 'telegram').length,
+    // BLOGGER (2026-11-27): the three saved Blogger articles were
+    // counted under 'all' because detectSource had no 'blogger' case,
+    // so the Galaxy showed no Blogger filter. Classified by URL here
+    // (and in the filter below), so existing rows need no re-paste.
+    blogger: bookmarks.filter((b) => detectSource(b.url) === 'blogger').length,
   };
 
   useEffect(() => {

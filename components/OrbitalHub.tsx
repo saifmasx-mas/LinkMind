@@ -14,6 +14,7 @@ export type SourceFilter =
   | 'x'
   | 'telegram'
   | 'facebook'
+  | 'blogger'
   | 'google';
 
 interface OrbitalHubProps {
@@ -112,12 +113,12 @@ const ORBIT_NODES: OrbitNode[] = [
     ),
   },
 
-  // المدار الخارجي (5 أيقونات بفاصل 72 درجة)
+  // المدار الخارجي (6 أيقونات بفاصل 60 درجة)
   {
     id: 'facebook',
     label: 'Facebook',
     ring: 'outer',
-    angle: 36,
+    angle: 30,
     glowColor: 'shadow-[0_0_20px_rgba(37,99,235,0.6)] border-blue-500/70',
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5 fill-[#1877F2]">
@@ -129,7 +130,7 @@ const ORBIT_NODES: OrbitNode[] = [
     id: 'instagram',
     label: 'Instagram',
     ring: 'outer',
-    angle: 108,
+    angle: 90,
     glowColor: 'shadow-[0_0_20px_rgba(236,72,153,0.55)] border-pink-400/60',
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5 fill-pink-400">
@@ -141,7 +142,7 @@ const ORBIT_NODES: OrbitNode[] = [
     id: 'tiktok',
     label: 'TikTok',
     ring: 'outer',
-    angle: 180,
+    angle: 150,
     glowColor: 'shadow-[0_0_20px_rgba(45,212,191,0.55)] border-teal-300/60',
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5 fill-teal-300">
@@ -153,7 +154,7 @@ const ORBIT_NODES: OrbitNode[] = [
     id: 'linkedin',
     label: 'LinkedIn',
     ring: 'outer',
-    angle: 252,
+    angle: 210,
     glowColor: 'shadow-[0_0_20px_rgba(96,165,250,0.55)] border-blue-300/60',
     icon: (
       <svg viewBox="0 0 24 24" className="w-4 h-4 fill-blue-400">
@@ -165,12 +166,28 @@ const ORBIT_NODES: OrbitNode[] = [
     id: 'x',
     label: 'X',
     ring: 'outer',
-    angle: 324,
+    angle: 270,
     glowColor: 'shadow-[0_0_20px_rgba(251,191,36,0.55)] border-amber-300/60',
     icon: (
       <svg viewBox="0 0 24 24" className="w-4 h-4 fill-white">
         <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
       </svg>
+    ),
+  },
+  // BLOGGER (2026-11-27): the orange "B" matches the Blogger badge on
+  // the library card (#FF5722). Sixth outer node, so the ring is
+  // respaced to 60 degrees (30, 90, 150, 210, 270, 330).
+  {
+    id: 'blogger',
+    label: 'Blogger',
+    ring: 'outer',
+    angle: 330,
+    glowColor: 'shadow-[0_0_20px_rgba(255,87,34,0.55)] border-orange-400/60',
+    icon: (
+      <div className="flex flex-col items-center justify-center leading-none">
+        <span className="text-xs font-black text-[#FF5722]">B</span>
+        <div className="w-3 h-0.5 bg-[#FF5722]/80 rounded-full mt-0.5" />
+      </div>
     ),
   },
 ];
