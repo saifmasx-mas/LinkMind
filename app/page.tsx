@@ -86,6 +86,8 @@ export default function Home() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
+  // رسالة نجاح بعد إنشاء الحساب (تأكيد البريد أو تسجيل دخول مباشر).
+  const [authMessage, setAuthMessage] = useState('');
 
   // Cloudflare Turnstile (2026-11-24): the "are you a robot" check on the
   // login page. The public site key comes from the env var; when it is
@@ -388,6 +390,7 @@ export default function Home() {
 
   const handleAuth = async (isSignUp: boolean) => {
     setAuthError('');
+    setAuthMessage('');
     if (!email || !password) return;
 
     // Cloudflare Turnstile: no auth call before the human check passes.
@@ -395,7 +398,7 @@ export default function Home() {
 
     // التصميم (2026-11-24): نص واضح أثناء تسجيل الدخول بدل دوّارة صامتة.
     setAuthBusy(true);
-    const { error } = isSignUp
+    const { data, error } = isSignUp
       ? await supabase.auth.signUp({
           email,
           password,
@@ -416,11 +419,22 @@ export default function Home() {
       // gets a Telegram message. Works even before email confirmation,
       // because the server verifies the new account itself.
       notifySignup(email);
+      // Tell the user what happened — before this fix signup showed
+      // nothing at all. With a session the user is signed in already
+      // (the library view opens, so the message goes to the notice bar
+      // there); without one they must confirm their email first, so the
+      // message stays on the login screen.
+      if (data?.session) {
+        setNotice(t.signupSuccessSignedIn);
+      } else {
+        setAuthMessage(t.signupSuccessConfirmEmail);
+      }
     }
   };
 
   const handleGoogleLogin = async () => {
     setAuthError('');
+    setAuthMessage('');
     // Cloudflare Turnstile: the Google button needs the human check too.
     if (!(await verifyTurnstile())) return;
     setAuthBusy(true);
@@ -1079,27 +1093,30 @@ export default function Home() {
               </a>
             )}
 
+            {/* زر Telegram مشروط بوجود اسم البوت فقط؛ أما زر الخروج
+                فيظهر دائماً لأي مستخدم مسجّل دخوله، حتى لو غاب متغير
+                اسم البوت من البيئة. */}
             {user && botUsername && (
-              <>
-                <button
-                  type="button"
-                  onClick={handleTelegramLink}
-                  disabled={telegramLinking}
-                  title={t.telegramBot}
-                  className="flex items-center gap-1.5 text-xs font-semibold bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 text-amber-200 border border-purple-400/30 px-3.5 py-2 min-h-9 rounded-xl transition disabled:opacity-60 cursor-pointer"
-                >
-                  <Send className="w-3.5 h-3.5 text-amber-400" />
-                  <span>{telegramLinking ? t.telegramConnecting : 'Telegram'}</span>
-                </button>
+              <button
+                type="button"
+                onClick={handleTelegramLink}
+                disabled={telegramLinking}
+                title={t.telegramBot}
+                className="flex items-center gap-1.5 text-xs font-semibold bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 text-amber-200 border border-purple-400/30 px-3.5 py-2 min-h-9 rounded-xl transition disabled:opacity-60 cursor-pointer"
+              >
+                <Send className="w-3.5 h-3.5 text-amber-400" />
+                <span>{telegramLinking ? t.telegramConnecting : 'Telegram'}</span>
+              </button>
+            )}
 
-                <button
-                  onClick={handleLogout}
-                  className="flex items-center gap-1.5 text-xs font-medium bg-[#160b2e]/80 hover:bg-fuchsia-950/70 text-purple-200 hover:text-fuchsia-200 border border-purple-500/25 px-3 py-2 min-h-9 rounded-xl transition cursor-pointer"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span>{t.logoutBtn}</span>
-                </button>
-              </>
+            {user && (
+              <button
+                onClick={handleLogout}
+                className="flex items-center gap-1.5 text-xs font-medium bg-[#160b2e]/80 hover:bg-fuchsia-950/70 text-purple-200 hover:text-fuchsia-200 border border-purple-500/25 px-3 py-2 min-h-9 rounded-xl transition cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>{t.logoutBtn}</span>
+              </button>
             )}
           </div>
         </div>
@@ -1142,6 +1159,12 @@ export default function Home() {
               {authError && (
                 <div className="mb-4 p-3 rounded-xl bg-fuchsia-500/15 border border-fuchsia-500/40 text-xs text-fuchsia-200 text-center">
                   {authError}
+                </div>
+              )}
+
+              {authMessage && (
+                <div className="mb-4 p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-xs text-emerald-200 text-center">
+                  {authMessage}
                 </div>
               )}
 
@@ -1331,6 +1354,11 @@ export default function Home() {
                 <span>{loading ? t.savingBtn : t.saveBtn}</span>
               </button>
             </form>
+
+            {/* رفع الكتاب يخصم رصيداً: أخبر المستخدم قبل أن يضغط الزر. */}
+            <p className="max-w-3xl mx-auto -mt-4 mb-6 text-center text-[11px] text-purple-300/70">
+              {t.uploadBookCostsCredit}
+            </p>
             </div>
 
             {/* التصميم (2026-11-24): مؤشر تقدم أثناء التحليل الطويل،
@@ -1382,6 +1410,11 @@ export default function Home() {
                     <span>{asking ? t.askingBtn : t.askBtn}</span>
                   </button>
                 </form>
+
+                {/* كل سؤال يخصم رصيداً: أخبر المستخدم قبل أن يسأل. */}
+                <p className="mt-2.5 text-[11px] text-purple-300/70 text-center">
+                  {t.askCostsCredit}
+                </p>
 
                 {aiAnswer && (
                   <div className="mt-4 pt-4 border-t border-fuchsia-500/20 relative">
