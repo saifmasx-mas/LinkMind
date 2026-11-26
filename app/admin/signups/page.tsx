@@ -3,10 +3,10 @@
 import React, { useEffect, useState } from 'react';
 import { translations, Language } from '@/lib/translations';
 import { supabase } from '@/lib/supabase';
+import LanguageDropdown from '@/components/LanguageDropdown';
 import {
   Bell,
   RefreshCw,
-  Globe,
   ShieldCheck,
   Sparkles,
   ArrowRight,
@@ -106,23 +106,8 @@ export default function AdminSignupsPage() {
               LinkMind
             </span>
           </a>
-          <div className="flex items-center gap-1 bg-[#160b2e]/90 p-1 rounded-xl border border-purple-500/25">
-            <Globe className="w-4 h-4 text-fuchsia-300 mx-1.5" />
-            {(['ar', 'tr', 'en'] as Language[]).map((l) => (
-              <button
-                key={l}
-                type="button"
-                onClick={() => setLang(l)}
-                className={`px-2.5 py-1 min-h-9 min-w-9 rounded-lg text-xs font-bold uppercase transition cursor-pointer ${
-                  lang === l
-                    ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-[0_0_12px_rgba(192,38,211,0.5)]'
-                    : 'text-purple-200/70 hover:text-white'
-                }`}
-              >
-                {l}
-              </button>
-            ))}
-          </div>
+          {/* قائمة اللغات المنسدلة (2026-11-27) — نفس مكوّن الصفحة الرئيسية. */}
+          <LanguageDropdown lang={lang} onChange={setLang} />
         </div>
       </header>
 
