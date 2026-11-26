@@ -4,6 +4,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { translations, Language } from '@/lib/translations';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { detectSource } from '@/lib/source-detect';
+import { parseHttpUrl } from '@/lib/link-check';
+import { isBetaContent } from '@/lib/beta-content';
+import { unwrapRedirectUrl } from '@/lib/redirect-unwrap';
 import { decidePdfBookPath, noticeAfterSave } from '@/lib/book-upload';
 import {
   buildBookPrintHtml,
@@ -21,7 +24,11 @@ import TurnstileWidget, {
   TurnstileWidgetHandle,
 } from '@/components/TurnstileWidget';
 import {
+  FacebookIcon,
+  InstagramIcon,
+  TelegramIcon,
   WhatsAppIcon,
+  XIcon,
 } from '@/components/SocialIcons';
 import {
   Plus,
@@ -108,11 +115,13 @@ export default function Home() {
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
   const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
-  // حالة الرصيد والباقة
-  const [credits, setCredits] = useState<number>(5);
+  // حالة الرصيد والباقة — القيمة الأولية 10 تطابق الرصيد المجاني
+  // لحساب جديد (مرحلة العرض؛ تعود إلى 5 عند الإطلاق الرسمي).
+  const [credits, setCredits] = useState<number>(10);
   const [planType, setPlanType] = useState<'free' | 'pro'>('free');
   const [showPricingModal, setShowPricingModal] = useState(false);
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
+  const [showContactModal, setShowContactModal] = useState(false);
 
   // حالة تصفية المجرة المدارية
   const [selectedSource, setSelectedSource] = useState<SourceFilter>('all');
@@ -580,6 +589,16 @@ export default function Home() {
     e.preventDefault();
     if (!urlInput.trim() || !user) return;
 
+    // FAST LINK CHECK (2026-11-27): validate the pasted URL's format
+    // instantly, before any network call — a missing scheme or a
+    // non-http(s) URL gets a clear message at once. Reachability
+    // itself is checked server-side (the /api/analyze pre-check),
+    // because the browser cannot fetch other sites (CORS).
+    if (!parseHttpUrl(urlInput.trim())) {
+      setNotice(t.invalidLink);
+      return;
+    }
+
     // I5: refuse a link that is already in this user's library.
     if (bookmarks.some((b) => b.url === urlInput.trim())) {
       setNotice(t.duplicateLink);
@@ -631,6 +650,23 @@ export default function Home() {
       // beginning of the book. Ask for a re-upload; no credit deducted.
       if (data.error === 'BOOK_TEXT_TRUNCATED') {
         setNotice(t.bookTruncatedNotice);
+        return;
+      }
+
+      // FAST LINK CHECK (2026-11-27): the server's pre-check refused
+      // the link before any fetch — dead link or bad format. Show its
+      // honest message; no credit was deducted.
+      if (data.error === 'INVALID_URL') {
+        setNotice(t.invalidLink);
+        return;
+      }
+
+      if (data.error === 'LINK_UNREACHABLE' || data.error === 'LINK_NOT_FOUND') {
+        setNotice(
+          typeof data.message === 'string' && data.message
+            ? data.message
+            : t.linkUnreachable
+        );
         return;
       }
 
@@ -1534,6 +1570,19 @@ export default function Home() {
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 {filteredBookmarks.map((item) => {
                   const isUploadedFile = item.url.startsWith('file://');
+                  // REDIRECT WRAPPERS (2026-11-27): old cards saved from
+                  // Facebook/Meta carry a wrapper URL (l.meta.ai/?u=...)
+                  // that never navigates (about:blank). Render the direct
+                  // URL instead — no re-paste needed.
+                  const displayUrl = unwrapRedirectUrl(item.url);
+                  // BETA BADGE (2026-11-27): beta / pre-release content
+                  // gets a small amber badge, detected from the URL,
+                  // title and summary at render time.
+                  const showBetaBadge = isBetaContent({
+                    url: displayUrl,
+                    title: item.title,
+                    summary: stripBookChapters(item.summary),
+                  });
                   return (
                     <div
                       key={item.id}
@@ -1557,6 +1606,14 @@ export default function Home() {
                                 <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#FF5722] text-white flex items-center gap-1">
                                   <span className="font-black leading-none">B</span>
                                   Blogger
+                                </span>
+                              )}
+                              {showBetaBadge && (
+                                <span
+                                  title={t.betaContentNote}
+                                  className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-400 text-[#180a2e] flex items-center gap-1"
+                                >
+                                  {t.betaContentBadge}
                                 </span>
                               )}
                               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600/30 to-fuchsia-600/30 text-amber-300 border border-fuchsia-500/30">
@@ -1713,7 +1770,7 @@ export default function Home() {
                             </>
                           ) : (
                             <a
-                              href={item.url}
+                              href={displayUrl}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="text-xs font-bold text-amber-300 hover:text-amber-200 flex items-center gap-1"
@@ -1840,6 +1897,75 @@ export default function Home() {
         </div>
       )}
 
+      {/* نافذة «اتصل بنا» (2026-11-27): رابط mailto المباشر في التذييل
+          كان يفتح نافذة اختيار تطبيق على الأجهزة التي ليس فيها تطبيق
+          بريد افتراضي ولا يحدث شيء. النافذة تعرض طرق التواصل الثلاث
+          بوضوح — واتساب أولاً وأبرزها — وعنوان البريد ظاهر كاملاً
+          ليُنسخ. */}
+      {showContactModal && (
+        <div
+          className="fixed inset-0 z-50 bg-[#05020d]/85 backdrop-blur-md flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="contact-title"
+        >
+          <div className="bg-gradient-to-b from-[#1a0d38] to-[#0d061f] border border-amber-400/40 rounded-3xl max-w-md w-full p-6 relative shadow-[0_0_60px_rgba(251,191,36,0.2)]">
+            <div className="flex items-center gap-2 mb-4">
+              <Mail className="w-5 h-5 text-amber-400" />
+              <h2 id="contact-title" className="text-lg font-extrabold text-white">
+                {t.footerContact}
+              </h2>
+            </div>
+            <div className="flex flex-col gap-3 mb-5">
+              <a
+                href="https://wa.me/905362515878"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 w-full bg-[#25D366] hover:bg-[#1eb856] text-[#062b16] font-bold py-3 px-4 rounded-xl transition"
+              >
+                <WhatsAppIcon className="w-5 h-5 shrink-0" />
+                <span className="flex flex-col items-start leading-tight">
+                  <span>{t.footerContactWhatsApp}</span>
+                  <span className="text-xs font-semibold opacity-80" dir="ltr">
+                    +905362515878
+                  </span>
+                </span>
+              </a>
+              <a
+                href="tel:+905362515878"
+                className="flex items-center gap-3 w-full bg-amber-400 hover:bg-amber-300 text-[#180a2e] font-bold py-3 px-4 rounded-xl transition"
+              >
+                <Phone className="w-5 h-5 shrink-0" />
+                <span className="flex flex-col items-start leading-tight">
+                  <span>{t.footerContactPhone}</span>
+                  <span className="text-xs font-semibold opacity-80" dir="ltr">
+                    +905362515878
+                  </span>
+                </span>
+              </a>
+              <a
+                href="mailto:saif.masx@gmail.com"
+                className="flex items-center gap-3 w-full border border-purple-500/40 bg-purple-900/40 hover:bg-purple-800/60 text-white font-bold py-3 px-4 rounded-xl transition"
+              >
+                <Mail className="w-5 h-5 shrink-0 text-amber-300" />
+                <span className="flex flex-col items-start leading-tight min-w-0">
+                  <span>{t.footerContactEmail}</span>
+                  <span className="text-xs font-semibold text-purple-200/80 select-all break-all" dir="ltr">
+                    saif.masx@gmail.com
+                  </span>
+                </span>
+              </a>
+            </div>
+            <button
+              onClick={() => setShowContactModal(false)}
+              className="w-full min-h-11 bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white font-bold py-2.5 rounded-xl cursor-pointer"
+            >
+              {t.footerContactClose}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* تذييل الموقع */}
       <footer className="relative z-10 border-t border-purple-500/20 bg-[#0d071c]/80 backdrop-blur-xl mt-10">
         <div className="max-w-6xl mx-auto px-4 py-8 flex flex-col items-center gap-5 text-center">
@@ -1852,13 +1978,16 @@ export default function Home() {
               <Phone className="w-4 h-4" />
               +905362515878
             </a>
-            <a
-              href="mailto:saif.masx@gmail.com"
-              className="flex items-center gap-1.5 text-amber-300 hover:text-amber-200 transition"
+            {/* «اتصل بنا» (2026-11-27): كان رابط mailto مباشراً يفتح
+                نافذة اختيار تطبيق على الهواتف التي ليس فيها تطبيق بريد
+                افتراضي — يفتح الآن نافذة تواصل داخل الموقع. */}
+            <button
+              onClick={() => setShowContactModal(true)}
+              className="flex items-center gap-1.5 text-amber-300 hover:text-amber-200 transition cursor-pointer"
             >
               <Mail className="w-4 h-4" />
               {t.footerContact}
-            </a>
+            </button>
             <button
               onClick={() => setShowPrivacyModal(true)}
               className="flex items-center gap-1.5 text-purple-200/85 hover:text-white transition cursor-pointer"
@@ -1875,13 +2004,17 @@ export default function Home() {
             </a>
           </div>
 
-          {/* M8 (audit #2): only WhatsApp links to a real LinkMind
-          contact — the X/Facebook/Instagram/Telegram icons pointed
-          at the platforms' homepages, so they are hidden until real
-          official accounts exist. */}
+          {/* روابط التواصل مؤقتة للصفحات الرئيسية للمنصات — تُستبدل
+          بروابط حسابات LinkMind الرسمية عندما تتوفر. أُعيد إظهار
+          الأيقونات الأربع (2026-11-27) بناءً على طلب المستخدم
+          الصريح، بعد أن أخفاها إصلاح M8 في التدقيق الثاني. */}
           <div className="flex items-center gap-3">
             <span className="text-xs text-purple-200/60">{t.footerFollow}</span>
             {[
+              { href: 'https://x.com', label: 'X', Icon: XIcon },
+              { href: 'https://www.facebook.com', label: 'Facebook', Icon: FacebookIcon },
+              { href: 'https://www.instagram.com', label: 'Instagram', Icon: InstagramIcon },
+              { href: 'https://t.me', label: 'Telegram', Icon: TelegramIcon },
               { href: 'https://wa.me/905362515878', label: 'WhatsApp', Icon: WhatsAppIcon },
             ].map(({ href, label, Icon }) => (
               <a

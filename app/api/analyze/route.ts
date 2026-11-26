@@ -4,6 +4,9 @@ import { YoutubeTranscript } from 'youtube-transcript';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createSupabaseAdminClient } from '@/lib/supabase-admin';
 import { fetchPublicUrl } from '@/lib/safe-fetch';
+import { checkLinkBeforeSave } from '@/lib/link-probe';
+import { preferHttpsUrl } from '@/lib/link-check';
+import { unwrapRedirectUrl } from '@/lib/redirect-unwrap';
 import { resolveShortUrl } from '@/lib/short-url';
 import { hasRealLinkContent } from '@/lib/content-gate';
 import { extractArticleText } from '@/lib/article-extract';
@@ -140,9 +143,14 @@ export async function POST(req: Request) {
     }
 
     if (!profile) {
+      // NEW-ACCOUNT CREDITS (2026-11-27): 10 free credits for the DEMO
+      // phase, so a committee member can try the site properly.
+      // Revert to 5 at the official launch (own domain + payment
+      // gateway). Existing balances are untouched — this only sets
+      // the starting balance of a brand-new account.
       const { data: newProfile, error: insertError } = await admin
         .from('user_profiles')
-        .insert({ user_id: userId, credits: 5, plan_type: 'free' })
+        .insert({ user_id: userId, credits: 10, plan_type: 'free' })
         .select('credits, plan_type')
         .single();
       // I8: a failed profile insert used to be ignored silently and then
@@ -207,6 +215,34 @@ export async function POST(req: Request) {
     if (isBookOrDoc) {
       finalUrl = `file://${bookType || 'pdf'}/${encodeURIComponent(bookTitle || 'Book')}`;
     } else {
+      // REDIRECT WRAPPERS (2026-11-27): a link pasted from
+      // Facebook/Meta arrives wrapped (l.meta.ai/?u=...), and the
+      // stored card then points at Meta's redirect shim instead of
+      // the article — clicking it stays about:blank. Unwrap it
+      // BEFORE the short-link resolve, the duplicate check and the
+      // fetch, so the saved row, the summary fetch and the dedup all
+      // use the direct URL. The wrapper's `h` parameter is Meta's
+      // hash, not a destination — a mangled hash (as on one live
+      // Blogger card) is ignored by the unwrapper.
+      finalUrl = unwrapRedirectUrl(finalUrl);
+
+      // HTTP→HTTPS UPGRADE (2026-11-27): many sites (Blogger included)
+      // 301-redirect plain http to https, and live the http paste of
+      // the Android 17 article failed with CONTENT_UNAVAILABLE while
+      // the SAME link as https saved immediately. Upgrade the scheme
+      // before the resolve / dedup / probe / fetch below, so the saved
+      // row carries the canonical https URL. The original http URL is
+      // kept as a fallback for the probe: if the https probe fails,
+      // the http URL is tried too, so genuinely http-only sites still
+      // work (and the post-analysis duplicate guard still catches a
+      // row saved under the http URL).
+      let httpFallbackUrl: string | null = null;
+      const upgradedUrl = preferHttpsUrl(finalUrl);
+      if (upgradedUrl !== finalUrl) {
+        httpFallbackUrl = finalUrl;
+        finalUrl = upgradedUrl;
+      }
+
       // LINKEDIN SHORT LINKS (2026-11-26): LinkedIn shares from the app
       // come as lnkd.in links. Resolve them to the canonical linkedin.com
       // URL BEFORE the duplicate check, so the same post pasted as a short
@@ -232,6 +268,37 @@ export async function POST(req: Request) {
         return NextResponse.json(
           { error: 'DUPLICATE_LINK', remainingCredits: currentCredits },
           { status: 409 }
+        );
+      }
+
+      // FAST LINK CHECK (2026-11-27): probe reachability BEFORE the
+      // heavy fetch stage. A dead link used to wait out the full
+      // fetch (up to ~16s with the browser-UA retry) before the
+      // generic CONTENT_UNAVAILABLE error. A DNS failure, a refused
+      // connection, a timeout or a 404/410 now fails fast with an
+      // honest message — no Gemini call, no save, no credit
+      // deduction. Any other status (403, 429, 500, redirect…)
+      // proceeds: the fetch stage and the content gate below still
+      // decide those, so a bot-blocked host is never wrongly refused
+      // here.
+      const linkCheck = await checkLinkBeforeSave(finalUrl);
+      // HTTP→HTTPS FALLBACK (2026-11-27): the upgraded https probe
+      // failed — the site may be http-only after all. Try the pasted
+      // http URL before refusing; if it answers, the save proceeds
+      // with it (the duplicate guard below still applies).
+      let effectiveLinkCheck = linkCheck;
+      if (!linkCheck.ok && httpFallbackUrl) {
+        const fallbackCheck = await checkLinkBeforeSave(httpFallbackUrl);
+        if (fallbackCheck.ok) {
+          finalUrl = httpFallbackUrl;
+          effectiveLinkCheck = fallbackCheck;
+        }
+      }
+      if (!effectiveLinkCheck.ok) {
+        console.error('Link pre-check failed:', finalUrl, effectiveLinkCheck.error);
+        return NextResponse.json(
+          { error: effectiveLinkCheck.error, message: effectiveLinkCheck.message },
+          { status: effectiveLinkCheck.status }
         );
       }
 
