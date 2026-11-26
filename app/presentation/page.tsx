@@ -129,7 +129,7 @@ export default function PresentationPage() {
 
         <Section icon={ListChecks} title="2 — كيف يعمل؟">
           <ul className="space-y-3 list-none">
-            <Item icon={Link2} title="الخطوة 1 — حفظ رابط" text="الصق رابط يوتيوب أو فيسبوك أو تيك توك أو إكس أو مقال، واضغط «حفظ وتلخيص»." />
+            <Item icon={Link2} title="الخطوة 1 — حفظ رابط" text="الصق رابط يوتيوب أو تيك توك أو إكس أو مقال، واضغط «حفظ وتلخيص»." />
             <Item icon={BookOpen} title="الخطوة 2 — رفع كتاب" text="ارفع ملف PDF أو Word فيحصل الكتاب على ملخص شامل فصلاً بفصل." />
             <Item icon={MessagesSquare} title="الخطوة 3 — اسأل ذاكرتك" text="اسأل عن محفوظاتك بالمعنى، فيجيب الذكاء الاصطناعي من مكتبتك أنت فقط." />
             <Item icon={Orbit} title="الخطوة 4 — المكتبة «المجرة»" text="كل المحفوظات مصنفة حسب المصدر وقابلة للبحث بالمعنى، في بطاقات مضغوطة مع زر «المزيد» لعرض الملخص الكامل." />
@@ -138,7 +138,7 @@ export default function PresentationPage() {
 
         <Section icon={Sparkles} title="3 — الميزات">
           <ul className="space-y-3 list-none">
-            <Item icon={Globe} title="مصادر متعددة" text="YouTube و TikTok و X والمقالات والمدونات وملفات PDF و Word. روابط Facebook و Instagram تُقبل لكن محتواها محمي غالباً." />
+            <Item icon={Globe} title="مصادر متعددة" text="YouTube و TikTok و X والمقالات والمدونات وملفات PDF و Word. أما روابط Facebook و Instagram فتُقبل لكن محتواها محمي غالباً، فلا يتوفر لها ملخص كامل في أغلب الحالات." />
             <Item icon={FileText} title="ملخصات شاملة" text="الكتب والمقالات الطويلة تُلخَّص قسماً بقسم ثم تُدمج في ملخص واحد كامل." />
             <Item icon={Bot} title="بوت تيليجرام" text="حفظ الروابط من تيليجرام، ووكيل دعم يجيب عن أسئلة العملاء ويحوّل نية الشراء إلى صاحب الموقع." />
             <Item icon={Bell} title="إشعارات المسؤول" text="إشعار فوري عند كل تسجيل جديد، وصفحة «المشتركون الجدد» للمسؤول فقط." />
@@ -181,7 +181,7 @@ export default function PresentationPage() {
 
         <Section icon={Trophy} title="7 — ملخص ما تم إنجازه">
           <ul className="space-y-3 list-none">
-            <Item icon={CheckCircle2} title="الموقع مكتمل ويعمل حياً" text="على link-mind-bay.vercel.app، مع 25 طلب سحب مدموجة: إصلاحات أمان، وملخصات شاملة، وبوت تيليجرام، ووكيل دعم، وإصلاحات تصنيف." />
+            <Item icon={CheckCircle2} title="الموقع مكتمل ويعمل حياً" text="على link-mind-bay.vercel.app، مع أكثر من 30 طلب سحب مدموجة: إصلاحات أمان، وملخصات شاملة، وبوت تيليجرام، ووكيل دعم، وإصلاحات تصنيف." />
             <Item icon={Info} title="حدود معروفة بصدق" text="روابط LinkedIn لا يمكن تلخيص محتواها (جدار تسجيل دخول)؛ وملخصات الفيديو من العنوان والوصف وليست نصاً منطوقاً كاملاً؛ ولا يوجد تطبيق جوال بعد." />
           </ul>
         </Section>

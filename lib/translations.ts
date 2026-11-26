@@ -15,6 +15,9 @@ export const translations = {
     aiAnswerTitle: 'إجابة LinkMind من مكتبتك:',
     emptyState: 'ذاكرتك السحابية فارغة حالياً. الصق أول رابط بالأعلى لتبدأ!',
     emptyStateBtn: 'الصق أول رابط',
+    // حالة تحميل المكتبة (2026-11-27): تُعرض أثناء جلب البطاقات،
+    // حتى لا تظهر رسالة «المكتبة فارغة» قبل اكتمال التحميل.
+    loadingLibrary: 'جارٍ تحميل مكتبتك…',
     deleteBtn: 'حذف',
     deleteConfirmTitle: 'حذف هذه البطاقة؟',
     deleteConfirmText: 'سيتم حذف البطاقة نهائياً من مكتبتك ولا يمكن التراجع عن ذلك.',
@@ -116,6 +119,7 @@ export const translations = {
     aiAnswerTitle: 'Kütüphanenizden LinkMind Yanıtı:',
     emptyState: 'Bulut hafızanız şu an boş. Başlamak için yukarıya ilk bağlantıyı yapıştırın!',
     emptyStateBtn: 'İlk bağlantıyı yapıştır',
+    loadingLibrary: 'Kitaplığınız yükleniyor…',
     deleteBtn: 'Sil',
     deleteConfirmTitle: 'Bu kart silinsin mi?',
     deleteConfirmText: 'Kart kitaplığınızdan kalıcı olarak silinecek ve geri alınamaz.',
@@ -218,6 +222,7 @@ export const translations = {
     aiAnswerTitle: 'LinkMind Answer from Your Library:',
     emptyState: 'Your cloud memory is empty. Paste your first link above to start!',
     emptyStateBtn: 'Add your first link',
+    loadingLibrary: 'Loading your library…',
     deleteBtn: 'Delete',
     deleteConfirmTitle: 'Delete this card?',
     deleteConfirmText: 'The card will be permanently deleted from your library and cannot be undone.',

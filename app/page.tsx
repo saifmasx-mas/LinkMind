@@ -118,6 +118,10 @@ export default function Home() {
   // حالة الرصيد والباقة — القيمة الأولية 10 تطابق الرصيد المجاني
   // لحساب جديد (مرحلة العرض؛ تعود إلى 5 عند الإطلاق الرسمي).
   const [credits, setCredits] = useState<number>(10);
+  // حالة تحميل الرصيد (2026-11-27): قبل أن يرد ملف المستخدم من
+  // قاعدة البيانات يُعرض «…» بدل الرقم الأولي، حتى لا يرى
+  // المستخدم رصيداً غير حقيقي.
+  const [profileLoaded, setProfileLoaded] = useState(false);
   const [planType, setPlanType] = useState<'free' | 'pro'>('free');
   const [showPricingModal, setShowPricingModal] = useState(false);
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
@@ -131,6 +135,10 @@ export default function Home() {
   const [queryEmbedding, setQueryEmbedding] = useState<number[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  // حالة تحميل المكتبة (2026-11-27): القائمة الأولية [] لا تعني
+  // أن المكتبة فارغة — قبل اكتمال الجلب تُعرض حالة تحميل، لا
+  // رسالة «المكتبة فارغة» ولا عدادات صفر كاذبة.
+  const [libraryLoaded, setLibraryLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
 
   // تتبع الخطوات المنجزة لكل بطاقة ونسخ Notion
@@ -325,6 +333,8 @@ export default function Home() {
       }
     } else {
       setBookmarks([]);
+      setLibraryLoaded(false);
+      setProfileLoaded(false);
       setIsAdmin(false);
     }
   }, [user]);
@@ -339,15 +349,21 @@ export default function Home() {
 
   const fetchUserProfile = async () => {
     if (!user) return;
-    const { data } = await supabase
-      .from('user_profiles')
-      .select('credits, plan_type')
-      .eq('user_id', user.id)
-      .single();
+    try {
+      const { data } = await supabase
+        .from('user_profiles')
+        .select('credits, plan_type')
+        .eq('user_id', user.id)
+        .single();
 
-    if (data) {
-      setCredits(data.credits);
-      setPlanType(data.plan_type === 'pro' ? 'pro' : 'free');
+      if (data) {
+        setCredits(data.credits);
+        setPlanType(data.plan_type === 'pro' ? 'pro' : 'free');
+      }
+    } finally {
+      // حتى لو فشل الطلب، انتهى التحميل — يبقى الرصيد الأولي
+      // (10 لحساب جديد) ولا يبقى الزر عالقاً على «…».
+      setProfileLoaded(true);
     }
   };
 
@@ -396,25 +412,32 @@ export default function Home() {
 
   const fetchBookmarks = async () => {
     if (!user) return;
-    // C3: ask only for this user's rows (RLS is the second line of defence,
-    // not the only one).
-    const { data, error } = await supabase
-      .from('bookmarks')
-      // SECURITY (2026-11-24 audit): select only the columns the UI uses
-      // instead of '*', so a future private column can never leak to the
-      // browser. `embedding` is still needed for local semantic search.
-      .select('id, url, title, summary, category, image_url, checklist, embedding, created_at')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
+    try {
+      // C3: ask only for this user's rows (RLS is the second line of defence,
+      // not the only one).
+      const { data, error } = await supabase
+        .from('bookmarks')
+        // SECURITY (2026-11-24 audit): select only the columns the UI uses
+        // instead of '*', so a future private column can never leak to the
+        // browser. `embedding` is still needed for local semantic search.
+        .select('id, url, title, summary, category, image_url, checklist, embedding, created_at')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
 
-    if (!error && data) {
-      const formatted = data.map((item) => ({
-        ...item,
-        checklist: safeJsonArray(item.checklist) as string[],
-        embedding: safeJsonArray(item.embedding) as number[],
-        created_at: new Date(item.created_at).toLocaleString(),
-      }));
-      setBookmarks(formatted);
+      if (!error && data) {
+        const formatted = data.map((item) => ({
+          ...item,
+          checklist: safeJsonArray(item.checklist) as string[],
+          embedding: safeJsonArray(item.embedding) as number[],
+          created_at: new Date(item.created_at).toLocaleString(),
+        }));
+        setBookmarks(formatted);
+      }
+    } finally {
+      // حتى لو فشل الجلب، انتهى التحميل — تُعرض حينها رسالة
+      // «المكتبة فارغة» (وهي الحالة القديمة عند خطأ حقيقي)،
+      // ولا يبقى التحميل عالقاً إلى الأبد.
+      setLibraryLoaded(true);
     }
   };
 
@@ -1152,7 +1175,9 @@ export default function Home() {
                   <>
                     <Zap className="w-4 h-4 text-amber-400" />
                     <span>
-                      {lang === 'ar'
+                      {!profileLoaded
+                        ? '…'
+                        : lang === 'ar'
                         ? `الرصيد: ${credits} شروحات`
                         : lang === 'tr'
                         ? `Kredi: ${credits}`
@@ -1370,12 +1395,22 @@ export default function Home() {
                 الإضافة فوق المجرة، حتى لا يُدفع زر الحفظ تحت الشاشة. */}
             <div className="flex flex-col">
             <div className="order-3 sm:order-1">
-            <OrbitalHub
-              selectedSource={selectedSource}
-              onSelectSource={setSelectedSource}
-              counts={sourceCounts}
-              lang={lang}
-            />
+            {/* حالة تحميل المكتبة (2026-11-27): قبل اكتمال الجلب لا
+                تُعرض المجرة بعدادات صفر كاذبة («الكل (0)»)، بل
+                عنصر تحميل بنفس ارتفاعها حتى لا يقفز التخطيط. */}
+            {libraryLoaded ? (
+              <OrbitalHub
+                selectedSource={selectedSource}
+                onSelectSource={setSelectedSource}
+                counts={sourceCounts}
+                lang={lang}
+              />
+            ) : (
+              <div className="min-h-[320px] sm:min-h-[390px] flex flex-col items-center justify-center gap-3">
+                <Sparkles className="w-8 h-8 text-amber-400 animate-spin" />
+                <p className="text-sm font-bold text-purple-200/80">{t.loadingLibrary}</p>
+              </div>
+            )}
             </div>
 
             <div className="order-1 sm:order-2 text-center max-w-2xl mx-auto mb-8">
@@ -1554,8 +1589,15 @@ export default function Home() {
               </div>
             </div>
 
-            {/* شبكة البطاقات */}
-            {filteredBookmarks.length === 0 ? (
+            {/* شبكة البطاقات — حالة التحميل أولاً (2026-11-27):
+                رسالة «المكتبة فارغة» لا تظهر إلا بعد اكتمال الجلب
+                فعلاً، وإلا ظهرت كذباً عند كل تحميل للصفحة. */}
+            {!libraryLoaded ? (
+              <div className="text-center py-20 px-4 border border-dashed border-purple-500/30 bg-[#120926]/40 rounded-3xl">
+                <Sparkles className="w-8 h-8 text-amber-400 animate-spin mx-auto mb-4" />
+                <p className="text-purple-300/80 font-bold">{t.loadingLibrary}</p>
+              </div>
+            ) : filteredBookmarks.length === 0 ? (
               <div className="text-center py-20 px-4 border border-dashed border-purple-500/30 bg-[#120926]/40 rounded-3xl">
                 <p className="text-purple-300/80 mb-5">{t.emptyState}</p>
                 <button
