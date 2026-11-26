@@ -59,6 +59,14 @@ function cosineSimilarity(vecA?: number[], vecB?: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) || 1);
 }
 
+// BLOGGER ICON (2026-11-26): a saved link from a Blogger blog
+// (blogspot.com or blogger.com) shows the orange Blogger badge on its
+// library card, so the source is visible at a glance — even when the
+// article has no cover image of its own.
+function isBloggerUrl(url: string): boolean {
+  return /blogspot\.|blogger\.com/i.test(url);
+}
+
 export default function Home() {
   const [lang, setLang] = useState<Language>('ar');
   const [user, setUser] = useState<User | null>(null);
@@ -1394,10 +1402,18 @@ export default function Home() {
                         )}
                         <div className="p-3.5">
                           <div className="flex items-center justify-between mb-1.5">
-                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600/30 to-fuchsia-600/30 text-amber-300 border border-fuchsia-500/30">
-                              {t.categories[item.category as keyof typeof t.categories] ||
-                                item.category}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {isBloggerUrl(item.url) && (
+                                <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#FF5722] text-white flex items-center gap-1">
+                                  <span className="font-black leading-none">B</span>
+                                  Blogger
+                                </span>
+                              )}
+                              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600/30 to-fuchsia-600/30 text-amber-300 border border-fuchsia-500/30">
+                                {t.categories[item.category as keyof typeof t.categories] ||
+                                  item.category}
+                              </span>
+                            </div>
                             <span className="text-[11px] text-purple-300/80">{item.created_at}</span>
                           </div>
                           <h2 className="font-bold text-base text-white mb-1 line-clamp-2 group-hover:text-amber-200 transition">
