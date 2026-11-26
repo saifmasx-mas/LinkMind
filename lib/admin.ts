@@ -38,6 +38,32 @@ export function isRecentSignup(
 }
 
 /**
+ * Plain-text Telegram message for a purchase intent (2026-11-26).
+ * Sent to the admin when a Telegram user tells the support bot they
+ * want to buy or pick a plan. The bot never handles payment itself —
+ * the owner steps in personally — so the message carries the buyer's
+ * exact words and the chat id (in case the owner wants to find the
+ * conversation), plus the time. Plain text (no parse_mode), so the
+ * buyer message needs no escaping.
+ */
+export function buildPurchaseIntentTelegramMessage(
+  buyerMessage: string,
+  buyerChatId: number,
+  whenMs: number = Date.now()
+): string {
+  const when = new Date(whenMs);
+  const whenText = Number.isNaN(when.getTime())
+    ? ''
+    : when.toLocaleString('ar', { timeZone: 'Asia/Riyadh' });
+  return (
+    `🛒 نية شراء جديدة في LinkMind\n\n` +
+    `💬 رسالة المشتري:\n${buyerMessage}\n\n` +
+    `🆔 المحادثة: ${buyerChatId}` +
+    (whenText ? `\n🕒 ${whenText}` : '')
+  );
+}
+
+/**
  * Plain-text Telegram message for a new signup. Sent as plain text
  * (no parse_mode), so the email address needs no escaping.
  */

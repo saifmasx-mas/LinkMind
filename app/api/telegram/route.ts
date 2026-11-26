@@ -7,6 +7,19 @@ import { fetchPublicUrl } from '@/lib/safe-fetch';
 import { generateContentWithFallback } from '@/lib/gemini';
 import { deductCredit } from '@/lib/credits';
 import { checkRateLimit, pruneRateLimitBuckets } from '@/lib/rate-limit';
+import { sendTelegramMessage } from '@/lib/telegram-send';
+import {
+  ADMIN_EMAIL,
+  findAuthUserByEmail,
+  buildPurchaseIntentTelegramMessage,
+} from '@/lib/admin';
+import {
+  detectPurchaseIntent,
+  detectSupportLanguage,
+  buildPurchaseHandoffReply,
+  buildSupportFallbackReply,
+  buildSupportPrompt,
+} from '@/lib/support-knowledge';
 
 export const runtime = 'nodejs';
 
@@ -19,15 +32,83 @@ interface TelegramMessage {
   text?: string;
 }
 
-async function sendTelegramMessage(chatId: number, text: string, botToken: string) {
-  const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
-  });
+// SUPPORT AGENT (2026-11-26): one purchase-intent notification per buyer
+// chat per 10 minutes. A buyer mashing "buy" must not flood the owner
+// with a message per tap; a repeat after 10 minutes is a new attempt.
+const PURCHASE_NOTIFY_WINDOW_MS = 10 * 60 * 1000;
+const purchaseNotifiedChats = new Map<number, number>();
 
-  if (!response.ok) {
-    throw new Error(`Telegram sendMessage failed with status ${response.status}`);
+/**
+ * Best-effort admin notification for a purchase intent. Resolves the
+ * admin's linked Telegram chat exactly like /api/admin/notify-signup
+ * does (admin email → auth user id → telegram_links). When the admin
+ * has no linked chat yet, nothing is sent — the buyer still gets the
+ * handoff reply and the WhatsApp link, so this never fails the reply.
+ */
+async function notifyAdminOfPurchaseIntent(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  buyerMessage: string,
+  buyerChatId: number,
+  botToken: string
+): Promise<void> {
+  const now = Date.now();
+  const lastNotified = purchaseNotifiedChats.get(buyerChatId);
+  if (lastNotified && now - lastNotified < PURCHASE_NOTIFY_WINDOW_MS) return;
+  try {
+    const adminUser = await findAuthUserByEmail(admin.auth.admin, ADMIN_EMAIL);
+    if (!adminUser) return;
+    const { data: tgLink } = await admin
+      .from('telegram_links')
+      .select('chat_id')
+      .eq('user_id', adminUser.id)
+      .maybeSingle();
+    if (!tgLink) {
+      console.warn(
+        'purchase-intent: admin has no linked Telegram chat yet — buyer got the WhatsApp link only'
+      );
+      return;
+    }
+    await sendTelegramMessage(
+      tgLink.chat_id,
+      buildPurchaseIntentTelegramMessage(buyerMessage, buyerChatId, now),
+      botToken
+    );
+    purchaseNotifiedChats.set(buyerChatId, now);
+    if (purchaseNotifiedChats.size > 1_000) {
+      for (const [chatId, at] of purchaseNotifiedChats) {
+        if (now - at >= PURCHASE_NOTIFY_WINDOW_MS) purchaseNotifiedChats.delete(chatId);
+      }
+    }
+  } catch (error) {
+    console.error(
+      'purchase-intent: failed to notify admin:',
+      (error as Error).message
+    );
+  }
+}
+
+/**
+ * Answer a support question from the LinkMind knowledge base with
+ * Gemini. Never throws: on a missing key or a Gemini failure the
+ * caller still gets the static fallback reply (with the WhatsApp
+ * link), and the webhook returns { ok: true }.
+ */
+async function answerSupportQuestion(question: string): Promise<string> {
+  const language = detectSupportLanguage(question);
+  const aiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!aiKey) return buildSupportFallbackReply(language);
+  try {
+    const ai = new GoogleGenAI({ apiKey: aiKey });
+    const response = await generateContentWithFallback(ai, {
+      contents: buildSupportPrompt(question, language),
+    });
+    const answer = (response.text || '').trim();
+    if (!answer) return buildSupportFallbackReply(language);
+    // Telegram caps a message at 4096 characters; stay safely under it.
+    return answer.slice(0, 4000);
+  } catch (error) {
+    console.error('Telegram support answer failed:', (error as Error).message);
+    return buildSupportFallbackReply(language);
   }
 }
 
@@ -105,7 +186,7 @@ export async function POST(request: Request) {
       if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
         await sendTelegramMessage(
           chatId,
-          'أهلاً بك في LinkMind! افتح الموقع واضغط على زر ربط Telegram لإنشاء رابط آمن.',
+          'أهلاً بك في LinkMind! افتح الموقع واضغط على زر ربط Telegram لإنشاء رابط آمن.\nويمكنك أيضاً سؤالي هنا عن LinkMind: الباقات والأسعار وكيفية الاستخدام.',
           botToken
         );
         return NextResponse.json({ ok: true });
@@ -166,6 +247,33 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
+    // SUPPORT AGENT (2026-11-26): decide link vs. question BEFORE the
+    // link lookup. A message with no link is a support question, answered
+    // for ANY sender — linked or not — because a prospective customer is
+    // not a user yet. Only saving a link still requires a linked account.
+    const urlMatch = text.match(/https?:\/\/[^\s<>]+/i);
+    const candidateUrl = urlMatch?.[0].replace(/[),.!?]+$/, '');
+    const url = candidateUrl ? isValidHttpUrl(candidateUrl) : null;
+
+    if (!url) {
+      // Purchase decision: the bot never handles payment. Tell the buyer
+      // the owner will contact them personally, notify the owner
+      // (best-effort), and give the WhatsApp link as a direct channel.
+      if (detectPurchaseIntent(text)) {
+        await notifyAdminOfPurchaseIntent(admin, text, chatId, botToken);
+        await sendTelegramMessage(
+          chatId,
+          buildPurchaseHandoffReply(detectSupportLanguage(text)),
+          botToken
+        );
+        return NextResponse.json({ ok: true });
+      }
+
+      // Any other question: answer from the LinkMind knowledge base.
+      await sendTelegramMessage(chatId, await answerSupportQuestion(text), botToken);
+      return NextResponse.json({ ok: true });
+    }
+
     const { data: linkData, error: lookupError } = await admin
       .from('telegram_links')
       .select('user_id')
@@ -182,14 +290,6 @@ export async function POST(request: Request) {
         '⚠️ اربط حسابك من داخل موقع LinkMind قبل إرسال الروابط.',
         botToken
       );
-      return NextResponse.json({ ok: true });
-    }
-
-    const urlMatch = text.match(/https?:\/\/[^\s<>]+/i);
-    const candidateUrl = urlMatch?.[0].replace(/[),.!?]+$/, '');
-    const url = candidateUrl ? isValidHttpUrl(candidateUrl) : null;
-    if (!url) {
-      await sendTelegramMessage(chatId, '📎 أرسل رابطاً عاماً صحيحاً يبدأ بـ http أو https.', botToken);
       return NextResponse.json({ ok: true });
     }
 
