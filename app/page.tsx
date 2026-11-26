@@ -41,6 +41,7 @@ import {
   Mail,
   ShieldCheck,
   Phone,
+  Presentation,
   Users,
 } from 'lucide-react';
 
@@ -1788,6 +1789,13 @@ export default function Home() {
               <ShieldCheck className="w-4 h-4" />
               {t.footerPrivacy}
             </button>
+            <a
+              href="/presentation"
+              className="flex items-center gap-1.5 text-purple-200/85 hover:text-white transition cursor-pointer"
+            >
+              <Presentation className="w-4 h-4" />
+              {t.footerPresentation}
+            </a>
           </div>
 
           {/* روابط التواصل مؤقتة للصفحات الرئيسية للمنصات — تُستبدل بروابط حسابات LinkMind الرسمية عندما تتوفر */}

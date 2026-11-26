@@ -71,6 +71,7 @@ export const translations = {
     footerPrivacyText:
       'يحفظ LinkMind روابطك وكتبك وملخصاتها في حسابك الخاص فقط، ولا يشاركها مع أي شخص أو جهة أخرى. بياناتك تبقى لك وحدك.',
     footerPrivacyClose: 'فهمت',
+    footerPresentation: 'العرض التقديمي',
     footerCopyright: '© 2026 LinkMind — جميع الحقوق محفوظة',
     footerFollow: 'تابعنا على',
     categories: {
@@ -151,6 +152,7 @@ export const translations = {
     footerPrivacyText:
       'LinkMind, bağlantılarınızı, kitaplarınızı ve özetlerinizi yalnızca kendi hesabınızda saklar ve hiç kimseyle paylaşmaz. Verileriniz yalnızca size aittir.',
     footerPrivacyClose: 'Anladım',
+    footerPresentation: 'Sunum',
     footerCopyright: '© 2026 LinkMind — Tüm hakları saklıdır',
     footerFollow: 'Bizi takip edin',
     categories: {
@@ -232,6 +234,7 @@ export const translations = {
     footerPrivacyText:
       'LinkMind stores your links, books and their summaries in your own account only, and never shares them with anyone else. Your data stays yours alone.',
     footerPrivacyClose: 'Got it',
+    footerPresentation: 'Presentation',
     footerCopyright: '© 2026 LinkMind — All rights reserved',
     footerFollow: 'Follow us on',
     categories: {
