@@ -35,11 +35,20 @@
 //   5. Render-time repair: the 3 stored Blogger wrapper URLs render
 //      as direct article links (no re-paste), and the wrapped URLs
 //      still classify as Blogger (the `u` value carries 'blogspot.').
+//   6. New-account free credits 5 → 10 (DEMO phase): the three
+//      profile-creation inserts (analyze / ask / telegram), the new
+//      migration default, and the UI initial balance are all 10;
+//      the paid plans ($5/50, $12/mo) are unchanged. Static source
+//      checks — no database here; a new profile is created only
+//      when no row exists, so existing balances are untouched.
 
 import { parseHttpUrl, preferHttpsUrl, classifyProbeStatus, classifyProbeError } from '../lib/link-check.ts';
 import { unwrapRedirectUrl, isRedirectWrapperUrl } from '../lib/redirect-unwrap.ts';
 import { isBetaContent } from '../lib/beta-content.ts';
 import { detectSource } from '../lib/source-detect.ts';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 let failures = 0;
 function check(name, actual, expected) {
@@ -230,8 +239,35 @@ check(
   true
 );
 
+// --- 6. New-account free credits: 5 → 10 (2026-11-27, DEMO phase) ------
+// The three profile-creation inserts and the migration default are the
+// only places that set a new account's starting balance; the paid plans
+// ($5/50 credits, $12/mo unlimited) and every existing balance are
+// untouched. These are static source checks (no database here): they pin
+// the value so nobody later "fixes" the 10 back to 5 thinking it was a
+// mistake — the 10 is the demo-phase value, and it goes back to 5 only
+// at the official launch (see the comments at each insert and in the
+// migration). A new profile is created only when no profile row exists,
+// so an existing user's balance can never be reset by this change.
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+const readSource = (rel) => readFileSync(join(repoRoot, rel), 'utf8');
+const sourceHas = (rel, needle) => readSource(rel).includes(needle);
+const sourceLacks = (rel, needle) => !readSource(rel).includes(needle);
+
+check('analyze creates a new profile with 10 credits', sourceHas('app/api/analyze/route.ts', 'credits: 10'), true);
+check('analyze no longer creates profiles with 5 credits', sourceLacks('app/api/analyze/route.ts', 'credits: 5'), true);
+check('ask creates a new profile with 10 credits', sourceHas('app/api/ask/route.ts', 'credits: 10'), true);
+check('ask no longer creates profiles with 5 credits', sourceLacks('app/api/ask/route.ts', 'credits: 5'), true);
+check('telegram creates a new profile with 10 credits', sourceHas('app/api/telegram/route.ts', 'credits: 10'), true);
+check('telegram no longer creates profiles with 5 credits', sourceLacks('app/api/telegram/route.ts', 'credits: 5'), true);
+check('migration default is 10', sourceHas('supabase/migrations/20261127000000_free_credits_10.sql', 'alter column credits set default 10'), true);
+check('UI initial balance is 10', sourceHas('app/page.tsx', 'useState<number>(10)'), true);
+check('UI initial balance is not 5', sourceLacks('app/page.tsx', 'useState<number>(5)'), true);
+check('student plan is still $5 for 50 credits', sourceHas('components/PricingModal.tsx', '$5') && sourceHas('components/PricingModal.tsx', '50 شرحاً'), true);
+check('creator plan is still $12/mo', sourceHas('components/PricingModal.tsx', '$12'), true);
+
 if (failures > 0) {
   console.log(`\n${failures} check(s) FAILED`);
   process.exit(1);
 }
-console.log('\nAll link-check + beta-badge + unwrap checks passed.');
+console.log('\nAll link-check + beta-badge + unwrap + free-credits checks passed.');
