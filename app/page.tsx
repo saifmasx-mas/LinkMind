@@ -37,12 +37,11 @@ import {
   Crown,
   ChevronDown,
   ChevronUp,
-  Bell,
-  RefreshCw,
   Mail,
   ShieldCheck,
   Phone,
 } from 'lucide-react';
+import { Bell, RefreshCw } from 'lucide-react';
 
 interface Bookmark {
   id: string;
