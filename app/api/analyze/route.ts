@@ -9,7 +9,14 @@ import { hasRealLinkContent } from '@/lib/content-gate';
 import { fetchYouTubeApiMetadata, fetchYouTubeOEmbed } from '@/lib/youtube';
 import { fetchTikTokOEmbed, fetchTikTokPageMetadata } from '@/lib/tiktok';
 import { generateContentWithFallback } from '@/lib/gemini';
-import { MAX_BOOK_TEXT_CHARS, summarizeBookFull } from '@/lib/book-summary';
+import {
+  MAX_BOOK_TEXT_CHARS,
+  isTruncatedBookText,
+  shouldUseFullSummary,
+  summarizeBookFull,
+  summarizeScannedBook,
+} from '@/lib/book-summary';
+import { appendBookChapters } from '@/lib/book-reader';
 import { getAuthenticatedUserId } from '@/lib/auth';
 import { deductCredit } from '@/lib/credits';
 import { checkRateLimit, pruneRateLimitBuckets } from '@/lib/rate-limit';
@@ -85,6 +92,7 @@ export async function POST(req: Request) {
       lang = 'ar',
       bookTitle,
       bookText,
+      bookTextLength,
       bookBase64,
       bookMimeType,
       bookType,
@@ -472,6 +480,34 @@ export async function POST(req: Request) {
       );
     }
 
+    // LENGTH-INTEGRITY GUARD (2026-11-27, live incident): the browser
+    // sends the length of the text it actually put in the request
+    // (`bookTextLength`). If the server receives materially less, the
+    // text was cut somewhere between the browser and the server — and
+    // summarising the fragment would silently produce a short "full"
+    // summary of the beginning of the book only (exactly what happened
+    // live to «اللغة الشاعرة»: one generic section, 8 ideas, 2
+    // checklist items, from a 135,000-character book). Refuse loudly
+    // with a dedicated error instead of saving a misleading summary;
+    // no credit is deducted. The frontend shows the matching notice.
+    if (isBookOrDoc && bookText && typeof bookTextLength === 'number') {
+      const receivedChars = bodyContent.length;
+      if (isTruncatedBookText(receivedChars, bookTextLength)) {
+        console.error(
+          `[analyze] book text truncated in transit: claimed=${bookTextLength} received=${receivedChars}`
+        );
+        return NextResponse.json(
+          {
+            error: 'BOOK_TEXT_TRUNCATED',
+            message:
+              'تعذّر إرسال نص الكتاب كاملاً إلى الخادم، فلم يتم إنشاء ملخص. حاول رفع الكتاب مرة أخرى، ولم يُخصم أي رصيد.',
+            contentWarning,
+          },
+          { status: 503 }
+        );
+      }
+    }
+
     const langInstruction =
       lang === 'ar'
         ? 'Write the title, summary, and checklist steps in clear, eloquent Arabic.'
@@ -512,14 +548,22 @@ export async function POST(req: Request) {
     // same path section by section. Scanned PDFs (bookBase64, where
     // Gemini reads the file itself), videos and short posts keep the
     // single-call path below.
-    let fullBookResult: { summary: string; checklist: string[] } | null = null;
+    let fullBookResult: Awaited<ReturnType<typeof summarizeBookFull>> | null = null;
     let aiRes;
     // A video/social link never takes the article path; a generic page
     // only does when it brought back substantial real text (>= 1000
     // chars) — a thin page still gets the short metadata summary.
+    // EVERY book (PDF or Word, extracted text or scanned file) takes
+    // the full path whenever it brought back text — see
+    // shouldUseFullSummary in lib/book-summary.ts.
     const isFullArticle =
       !isBookOrDoc && !isVideoOrSocialLink && bodyContent.trim().length >= 1000;
-    if ((isBookOrDoc || isFullArticle) && bodyContent) {
+    const useFullSummary = shouldUseFullSummary({
+      isBookOrDoc,
+      isFullArticle,
+      bodyContentLength: bodyContent.length,
+    });
+    if (useFullSummary) {
       try {
         fullBookResult = await summarizeBookFull(ai, {
           text: bodyContent,
@@ -604,6 +648,36 @@ URL: ${finalUrl}`;
       }
     }
 
+    // SCANNED BOOK (2026-11-27): an image PDF has no text layer, so
+    // the chapter splitter cannot run on it. Ask Gemini to read the
+    // PDF itself and return a structured chapter-by-chapter summary —
+    // the same reader view and PDF download as a text book. Only
+    // attempted while the request is still young (the frontend waits
+    // 55s and the short-path fallback below needs time too); on any
+    // failure the book falls through to the short summary, so a
+    // scanned book is never worse off than before.
+    if (!fullBookResult && isBookOrDoc && bookBase64) {
+      if (Date.now() - requestStartedAt < 20_000) {
+        try {
+          fullBookResult = await summarizeScannedBook(ai, {
+            base64: bookBase64,
+            mimeType: bookMimeType || 'application/pdf',
+            lang,
+          });
+        } catch (error) {
+          console.warn(
+            'Scanned book structured summary failed, falling back to short summary:',
+            error
+          );
+          fullBookResult = null;
+        }
+      } else {
+        console.warn(
+          '[analyze] scanned book structured summary skipped: request already old'
+        );
+      }
+    }
+
     if (fullBookResult) {
       // Chapter-by-chapter (or section-by-section) summary: the title
       // stays the real fetched title (hasRealTitle), the summary is the
@@ -612,6 +686,13 @@ URL: ${finalUrl}`;
       finalSummary = fullBookResult.summary;
       finalChecklist = fullBookResult.checklist;
       if (isBookOrDoc) finalCategory = 'Learning';
+      // Diagnostics for the live incident (2026-11-27): a book that
+      // arrives intact must split into several chapters. If a future
+      // upload ever logs chapters=1 for a long text, the text was cut
+      // upstream — the length guard above should have caught it.
+      console.log(
+        `[analyze] full summary: kind=${isBookOrDoc ? 'book' : 'article'} receivedChars=${bodyContent.length} claimedChars=${typeof bookTextLength === 'number' ? bookTextLength : 'n/a'} chapters=${fullBookResult.chapters.length} checklist=${fullBookResult.checklist.length}`
+      );
     } else {
       try {
         const parsed = JSON.parse(aiRes?.text || '{}');
@@ -652,6 +733,16 @@ URL: ${finalUrl}`;
       } catch {
         // An embedding is optional; a failed or timed-out embedding must not fail the analysis.
       }
+    }
+
+    // BOOK READER (2026-11-27): store the structured chapters with
+    // the plain summary so the reader view and the PDF download can
+    // open every chapter and every idea. The embedding above was built
+    // from the plain text on purpose — the JSON envelope must not
+    // pollute it. The envelope is stripped everywhere the summary is
+    // shown (see lib/book-reader.ts).
+    if (fullBookResult && isBookOrDoc) {
+      finalSummary = appendBookChapters(finalSummary, fullBookResult.chapters);
     }
 
     // Deduct only after a successful AI analysis (see C7 above).

@@ -5,6 +5,7 @@ import { getAuthenticatedUserId } from '@/lib/auth';
 import { createSupabaseAdminClient } from '@/lib/supabase-admin';
 import { deductCredit } from '@/lib/credits';
 import { checkRateLimit, pruneRateLimitBuckets } from '@/lib/rate-limit';
+import { stripBookChapters } from '@/lib/book-reader';
 
 export const maxDuration = 60;
 
@@ -121,11 +122,15 @@ export async function POST(req: Request) {
       lang === 'ar' ? 'Arabic' : lang === 'tr' ? 'Turkish' : 'English';
 
     const savedList = bookmarks || [];
+    // BOOK READER (2026-11-27): a book summary carries the structured
+    // chapters in a storage envelope — strip it before feeding the
+    // summary to Gemini or searching it, so the JSON never pollutes
+    // the answer context or a keyword match.
     const contextText = savedList
       .slice(0, 15)
       .map(
         (b: { title: string; summary: string; url: string }, idx: number) =>
-          `[${idx + 1}] Title: ${b.title}\nSummary: ${b.summary}\nURL: ${b.url}`
+          `[${idx + 1}] Title: ${b.title}\nSummary: ${stripBookChapters(b.summary)}\nURL: ${b.url}`
       )
       .join('\n\n');
 
@@ -173,7 +178,8 @@ export async function POST(req: Request) {
     const q = query.toLowerCase();
     const matches = savedList.filter(
       (b: { title: string; summary: string }) =>
-        b.title.toLowerCase().includes(q) || b.summary.toLowerCase().includes(q)
+        b.title.toLowerCase().includes(q) ||
+        stripBookChapters(b.summary).toLowerCase().includes(q)
     );
 
     if (matches.length > 0) {

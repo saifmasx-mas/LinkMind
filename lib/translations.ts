@@ -45,6 +45,17 @@ export const translations = {
       'تم إنشاء حسابك. تحقق من بريدك الإلكتروني لتأكيد الحساب ثم سجّل الدخول.',
     askCostsCredit: 'كل سؤال يخصم نقطة واحدة من رصيدك.',
     uploadBookCostsCredit: 'رفع كتاب يخصم نقطة واحدة من رصيدك.',
+    // قارئ الكتاب (2026-11-27): عرض الملخص فصلاً بفصل مع الأفكار القابلة للتوسيع.
+    openBook: 'افتح الكتاب',
+    bookReaderTitle: 'قارئ الكتاب',
+    bookReaderSubtitle: 'ملخص شامل فصلاً بفصل — اضغط على الفصل ثم على الفكرة لعرض تفصيلها.',
+    bookChapters: 'الفصول',
+    bookIdeas: 'الأفكار',
+    downloadBookPdf: 'تنزيل PDF',
+    bookTruncatedNotice:
+      'تعذّر إرسال نص الكتاب كاملاً إلى الخادم، فلم يتم إنشاء ملخص. حاول رفع الكتاب مرة أخرى، ولم يُخصم أي رصيد.',
+    pdfPopupBlocked:
+      'تعذّر فتح نافذة التنزيل — اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مجدداً.',
     telegramBot: 'ربط Telegram',
     telegramConnecting: 'جاري فتح Telegram...',
     telegramSignInRequired: 'سجّل الدخول إلى LinkMind أولاً.',
@@ -126,6 +137,17 @@ export const translations = {
       'Hesabınız oluşturuldu. Hesabınızı doğrulamak için e-postanızı kontrol edin, ardından giriş yapın.',
     askCostsCredit: 'Her soru kredinizden 1 kredi düşer.',
     uploadBookCostsCredit: 'Kitap yüklemek kredinizden 1 kredi düşer.',
+    openBook: 'Kitabı Aç',
+    bookReaderTitle: 'Kitap Okuyucu',
+    bookReaderSubtitle:
+      'Bölüm bölüm tam özet — ayrıntısını görmek için önce bölüme, sonra fikre dokunun.',
+    bookChapters: 'Bölümler',
+    bookIdeas: 'Fikirler',
+    downloadBookPdf: 'PDF İndir',
+    bookTruncatedNotice:
+      'Kitabın metni sunucuya tam olarak gönderilemedi, bu yüzden özet oluşturulmadı. Kitabı tekrar yüklemeyi deneyin; kredi düşülmedi.',
+    pdfPopupBlocked:
+      'İndirme penceresi açılamadı — bu site için açılır pencerelere izin verin ve tekrar deneyin.',
     telegramBot: 'Telegram’ı bağla',
     telegramConnecting: 'Telegram açılıyor...',
     telegramSignInRequired: 'Önce LinkMind hesabınıza giriş yapın.',
@@ -208,6 +230,17 @@ export const translations = {
       'Your account was created. Check your email to confirm your account, then sign in.',
     askCostsCredit: 'Each question deducts 1 credit from your balance.',
     uploadBookCostsCredit: 'Uploading a book deducts 1 credit from your balance.',
+    openBook: 'Open the Book',
+    bookReaderTitle: 'Book Reader',
+    bookReaderSubtitle:
+      'Full chapter-by-chapter summary — tap a chapter, then an idea, to read its detail.',
+    bookChapters: 'Chapters',
+    bookIdeas: 'Ideas',
+    downloadBookPdf: 'Download PDF',
+    bookTruncatedNotice:
+      'The book text could not be sent to the server in full, so no summary was created. Please upload the book again; no credit was deducted.',
+    pdfPopupBlocked:
+      'The download window could not be opened — allow pop-ups for this site and try again.',
     telegramBot: 'Connect Telegram',
     telegramConnecting: 'Opening Telegram...',
     telegramSignInRequired: 'Sign in to LinkMind first.',
