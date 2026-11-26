@@ -84,7 +84,9 @@ export function parseBookSummary(summary: string): ParsedBookSummary {
   try {
     const parsed: unknown = JSON.parse(jsonText);
     if (isValidChapterData(parsed)) {
-      return { displaySummary, chapters: parsed };
+      // Titles are renumbered at parse time (see below): the stored
+      // envelope keeps the model's titles, the reader shows 1..N.
+      return { displaySummary, chapters: renumberBookChapters(parsed) };
     }
   } catch {
     // Corrupt envelope: fall through and show the plain text.
@@ -95,6 +97,91 @@ export function parseBookSummary(summary: string): ParsedBookSummary {
 /** Plain display summary (envelope stripped) for search, export and ask. */
 export function stripBookChapters(summary: string): string {
   return parseBookSummary(summary).displaySummary;
+}
+
+// CHAPTER NUMBERING (2026-11-27): the chapter titles stored in the
+// envelope come from Gemini, and the model copies the book's OWN
+// internal section numbers into them — «اللغة الشاعرة» numbers its
+// sections 2, 3, 5, 7, 9, 11, 13, 15, 17, 18, so the live reader
+// showed exactly those (no section 1, 4 or 6) while its position
+// badges already counted 1..10. Renumbering happens HERE, at parse
+// time, not when the summary is stored: the already-saved live row
+// is fixed by this alone, with no re-upload and no migration, and the
+// function is idempotent, so titles that are already sequential come
+// back unchanged. Only the embedded number is corrected — the
+// descriptive part of the title and every idea are kept as-is.
+const ARABIC_ORDINALS_MASC =
+  'الثالث عشر|الرابع عشر|الخامس عشر|السادس عشر|السابع عشر|الثامن عشر|التاسع عشر|' +
+  'الحادي عشر|الثاني عشر|العشرون|الأول|الثاني|الثالث|الرابع|الخامس|السادس|' +
+  'السابع|الثامن|التاسع|العاشر';
+const ARABIC_ORDINALS_FEM =
+  'الحادية عشرة|الثانية عشرة|الأولى|الثانية|الثالثة|الرابعة|الخامسة|السادسة|' +
+  'السابعة|الثامنة|التاسعة|العاشرة';
+const ARABIC_ORDINALS = `${ARABIC_ORDINALS_MASC}|${ARABIC_ORDINALS_FEM}`;
+const CHAPTER_NUMBER_WORDS = 'الفصل|الباب|المبحث|المطلب|القسم|الجزء';
+
+// Split a leading chapter-number prefix off a title:
+// - "القسم الثاني: اللغة الشاعرة" -> { word: "القسم", rest: "اللغة الشاعرة" }
+// - "القسم 3" -> { word: "القسم", rest: "" }
+// - "Section 3: Growth" -> { word: "Section", rest: "Growth" }
+// - "3. المقدمة" / "الثاني: اللغة الشاعرة" -> { rest: "المقدمة" } (a
+//   bare number with no chapter word — the position badge shows it)
+// - "المقدمة" / "لغة التعبير" -> null (no number embedded; keep as-is)
+function splitChapterNumberPrefix(
+  title: string
+): { word?: string; rest: string } | null {
+  const t = title.trim();
+  if (!t) return null;
+  const withWord = new RegExp(
+    `^(${CHAPTER_NUMBER_WORDS})\\s+(${ARABIC_ORDINALS}|[0-9٠-٩]{1,2})(?=$|\\s|[:：—–-])\\s*[:：—–-]?\\s*(.*)$`
+  ).exec(t);
+  if (withWord) {
+    return { word: withWord[1], rest: (withWord[3] || '').trim() };
+  }
+  const english =
+    /^(Chapter|Part|Section)\s+(\d{1,2})(?=$|\s|[:—–-])\s*[:—–-]?\s*(.*)$/i.exec(t);
+  if (english) {
+    return { word: english[1], rest: (english[3] || '').trim() };
+  }
+  const bareNumber = /^\(?\d{1,2}[\)\].:—–-]\s+(.+)$/.exec(t);
+  if (bareNumber) {
+    return { rest: bareNumber[1].trim() };
+  }
+  const bareOrdinal = new RegExp(
+    `^(${ARABIC_ORDINALS})(?=$|\\s|[:：—–-])\\s*[:：—–-]?\\s*(.+)$`
+  ).exec(t);
+  if (bareOrdinal) {
+    return { rest: bareOrdinal[2].trim() };
+  }
+  return null;
+}
+
+/**
+ * Renumber chapters sequentially 1..N in display order, correcting
+ * only the number embedded in each title. Titles with no embedded
+ * number are returned unchanged (the reader's position badge already
+ * shows their number). Idempotent: renumbering an already-sequential
+ * list returns the same titles.
+ */
+export function renumberBookChapters(chapters: BookChapterData[]): BookChapterData[] {
+  return (chapters || []).map((chapter, index) => {
+    const n = index + 1;
+    const title = (chapter.title || '').trim();
+    const prefix = splitChapterNumberPrefix(title);
+    if (!prefix) {
+      return chapter.title === title ? chapter : { ...chapter, title };
+    }
+    if (prefix.word) {
+      const rest = prefix.rest.replace(/^[:：—–-]\s*/, '').trim();
+      return { ...chapter, title: rest ? `${prefix.word} ${n}: ${rest}` : `${prefix.word} ${n}` };
+    }
+    return { ...chapter, title: prefix.rest };
+  });
+}
+
+/** Total ideas across all chapters — the number the book card shows. */
+export function countBookIdeas(chapters: BookChapterData[]): number {
+  return (chapters || []).reduce((n, ch) => n + (ch?.ideas?.length ?? 0), 0);
 }
 
 const BULLET_PREFIX = /^[•\-*]\s*/;
@@ -138,9 +225,11 @@ export function parsePlainSummaryToChapters(summary: string): BookChapterData[] 
     }
   }
   if (chapters.length === 0) {
-    return [{ title: 'ملخص', ideas: [{ text: text.slice(0, 160), detail: text }] }];
+    return renumberBookChapters([
+      { title: 'ملخص', ideas: [{ text: text.slice(0, 160), detail: text }] },
+    ]);
   }
-  return chapters;
+  return renumberBookChapters(chapters);
 }
 
 export interface PrintBookOptions {
