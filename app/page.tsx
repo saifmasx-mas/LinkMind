@@ -30,6 +30,8 @@ import {
   Crown,
   ChevronDown,
   ChevronUp,
+  Bell,
+  RefreshCw,
 } from 'lucide-react';
 
 interface Bookmark {
@@ -116,6 +118,20 @@ export default function Home() {
   const [telegramLinking, setTelegramLinking] = useState(false);
   const [resetSent, setResetSent] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
+
+  // ADMIN SIGNUP NOTIFY (2026-11-26): the admin panel shows the newest
+  // signups inside the site. It only ever appears when the server
+  // confirms the caller is the admin — the browser never decides that.
+  interface RecentSignup {
+    email: string;
+    created_at: string;
+  }
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [recentSignups, setRecentSignups] = useState<RecentSignup[]>([]);
+  const [totalSignups, setTotalSignups] = useState(0);
+  const [telegramLinked, setTelegramLinked] = useState(true);
+  const [signupsLoading, setSignupsLoading] = useState(false);
+  const [signupsError, setSignupsError] = useState(false);
   // التصميم (2026-11-24): حالة تسجيل الدخول + تأكيد الحذف + مرجع حقل الرابط.
   const [authBusy, setAuthBusy] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
@@ -283,8 +299,27 @@ export default function Home() {
     if (user) {
       fetchBookmarks();
       fetchUserProfile();
+      fetchRecentSignups();
+      // ADMIN SIGNUP NOTIFY: a Google (or any OAuth) account has no
+      // signUp call on this page, so a first login is detected here:
+      // the auth account was created minutes ago. Guarded by
+      // sessionStorage so one login notifies once per tab; the server
+      // also rate-limits to one message per email per hour.
+      try {
+        const createdMs = Date.parse(user.created_at || '');
+        const isBrandNew = !Number.isNaN(createdMs) && Date.now() - createdMs < 10 * 60 * 1000;
+        const guardKey = `linkmind-notified-signup:${user.id}`;
+        if (isBrandNew && user.email && !window.sessionStorage.getItem(guardKey)) {
+          window.sessionStorage.setItem(guardKey, '1');
+          notifySignup(user.email);
+        }
+      } catch {
+        // Notification is best-effort only.
+      }
     } else {
       setBookmarks([]);
+      setIsAdmin(false);
+      setRecentSignups([]);
     }
   }, [user]);
 
@@ -308,6 +343,50 @@ export default function Home() {
       setCredits(data.credits);
       setPlanType(data.plan_type === 'pro' ? 'pro' : 'free');
     }
+  };
+
+  // ADMIN SIGNUP NOTIFY: load the newest signups for the admin panel.
+  // A 401/403 simply means this account is not the admin, so the panel
+  // stays hidden — no error is shown to a regular user.
+  const fetchRecentSignups = async () => {
+    setSignupsLoading(true);
+    setSignupsError(false);
+    try {
+      const headers = await authHeaders();
+      const res = await fetch('/api/admin/signups', { headers });
+      if (res.status === 401 || res.status === 403) {
+        setIsAdmin(false);
+        return;
+      }
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data = (await res.json()) as {
+        signups?: RecentSignup[];
+        total?: number;
+        telegramLinked?: boolean;
+      };
+      setIsAdmin(true);
+      setRecentSignups(Array.isArray(data.signups) ? data.signups : []);
+      setTotalSignups(typeof data.total === 'number' ? data.total : 0);
+      setTelegramLinked(data.telegramLinked !== false);
+    } catch {
+      setSignupsError(true);
+    } finally {
+      setSignupsLoading(false);
+    }
+  };
+
+  // ADMIN SIGNUP NOTIFY: tell the server a new account was just created
+  // so it can Telegram the admin. Fire-and-forget — it never blocks the
+  // UI and never shows an error to the new user. The admin panel is the
+  // reliable record; this message is only the instant alert.
+  const notifySignup = (signupEmail: string) => {
+    fetch('/api/admin/notify-signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: signupEmail }),
+    }).catch(() => {
+      // Best-effort only; the admin panel still shows the signup.
+    });
   };
 
   // C8: one corrupt checklist/embedding row used to throw inside .map()
@@ -374,6 +453,11 @@ export default function Home() {
       // The token was already spent on the server check, so it cannot be
       // reused for the next attempt.
       resetTurnstile();
+    } else if (isSignUp) {
+      // ADMIN SIGNUP NOTIFY: tell the server right away so the admin
+      // gets a Telegram message. Works even before email confirmation,
+      // because the server verifies the new account itself.
+      notifySignup(email);
     }
   };
 
@@ -1293,6 +1377,58 @@ export default function Home() {
                 >
                   <X className="w-4 h-4" />
                 </button>
+              </div>
+            )}
+
+            {/* ADMIN SIGNUP NOTIFY (2026-11-26): newest signups, admin
+                only. Rendered only when the server confirmed this account
+                is the admin — regular users never see this block. */}
+            {isAdmin && (
+              <div className="max-w-3xl mx-auto mb-8 bg-[#120926]/85 backdrop-blur-xl border border-amber-400/40 rounded-2xl p-4 shadow-[0_0_30px_rgba(251,191,36,0.12)]">
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <h2 className="text-sm font-extrabold text-amber-300 flex items-center gap-2">
+                    <Bell className="w-4 h-4 text-amber-400" />
+                    <span>{t.adminSignupsTitle}</span>
+                    <span className="text-xs font-bold text-purple-200/80">({totalSignups})</span>
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={fetchRecentSignups}
+                    disabled={signupsLoading}
+                    className="text-xs font-bold text-amber-300 hover:text-amber-200 flex items-center gap-1 disabled:opacity-60 cursor-pointer"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${signupsLoading ? 'animate-spin' : ''}`}
+                    />
+                    <span>{t.adminSignupsRefresh}</span>
+                  </button>
+                </div>
+                {!telegramLinked && (
+                  <p className="text-xs text-amber-200/90 bg-amber-500/10 border border-amber-400/30 rounded-xl px-3 py-2 mb-3">
+                    {t.adminTelegramNotLinked}
+                  </p>
+                )}
+                {signupsError ? (
+                  <p className="text-xs text-fuchsia-200">{t.adminSignupsError}</p>
+                ) : recentSignups.length === 0 ? (
+                  <p className="text-xs text-purple-200/80">{t.adminSignupsEmpty}</p>
+                ) : (
+                  <ul className="space-y-1.5 max-h-56 overflow-y-auto pe-1">
+                    {recentSignups.map((s) => (
+                      <li
+                        key={`${s.email}-${s.created_at}`}
+                        className="flex items-center justify-between gap-3 text-xs bg-[#090514]/80 border border-purple-500/15 rounded-lg px-3 py-2"
+                      >
+                        <span className="text-purple-50 font-semibold break-all">{s.email}</span>
+                        <span className="text-purple-300/80 shrink-0">
+                          {new Date(s.created_at).toLocaleString(
+                            lang === 'ar' ? 'ar' : lang === 'tr' ? 'tr' : 'en'
+                          )}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
 
