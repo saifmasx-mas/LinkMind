@@ -56,6 +56,14 @@ export const translations = {
     paymentUnavailable:
       'بوابة الدفع غير متوفرة بعد. الشراء والاشتراك غير مفعّلين حالياً.',
     logoutBtn: 'خروج',
+    footerContact: 'اتصل بنا',
+    footerPrivacy: 'سياسة الخصوصية',
+    footerPrivacyTitle: 'سياسة الخصوصية',
+    footerPrivacyText:
+      'يحفظ LinkMind روابطك وكتبك وملخصاتها في حسابك الخاص فقط، ولا يشاركها مع أي شخص أو جهة أخرى. بياناتك تبقى لك وحدك.',
+    footerPrivacyClose: 'فهمت',
+    footerCopyright: '© 2026 LinkMind — جميع الحقوق محفوظة',
+    footerFollow: 'تابعنا على',
     categories: {
       All: 'الكل',
       Programming: 'برمجة',
@@ -119,6 +127,14 @@ export const translations = {
     paymentUnavailable:
       'Ödeme sistemi henüz hazır değil. Satın alma ve abonelik şu anda etkin değil.',
     logoutBtn: 'Çıkış',
+    footerContact: 'Bize Ulaşın',
+    footerPrivacy: 'Gizlilik Politikası',
+    footerPrivacyTitle: 'Gizlilik Politikası',
+    footerPrivacyText:
+      'LinkMind, bağlantılarınızı, kitaplarınızı ve özetlerinizi yalnızca kendi hesabınızda saklar ve hiç kimseyle paylaşmaz. Verileriniz yalnızca size aittir.',
+    footerPrivacyClose: 'Anladım',
+    footerCopyright: '© 2026 LinkMind — Tüm hakları saklıdır',
+    footerFollow: 'Bizi takip edin',
     categories: {
       All: 'Tümü',
       Programming: 'Yazılım',
@@ -183,6 +199,14 @@ export const translations = {
     paymentUnavailable:
       'Payments are not available yet. Buying and subscribing are currently disabled.',
     logoutBtn: 'Logout',
+    footerContact: 'Contact Us',
+    footerPrivacy: 'Privacy Policy',
+    footerPrivacyTitle: 'Privacy Policy',
+    footerPrivacyText:
+      'LinkMind stores your links, books and their summaries in your own account only, and never shares them with anyone else. Your data stays yours alone.',
+    footerPrivacyClose: 'Got it',
+    footerCopyright: '© 2026 LinkMind — All rights reserved',
+    footerFollow: 'Follow us on',
     categories: {
       All: 'All',
       Programming: 'Programming',

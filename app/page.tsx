@@ -10,6 +10,13 @@ import TurnstileWidget, {
   TurnstileWidgetHandle,
 } from '@/components/TurnstileWidget';
 import {
+  FacebookIcon,
+  InstagramIcon,
+  TelegramIcon,
+  WhatsAppIcon,
+  XIcon,
+} from '@/components/SocialIcons';
+import {
   Plus,
   Search,
   ExternalLink,
@@ -32,6 +39,9 @@ import {
   ChevronUp,
   Bell,
   RefreshCw,
+  Mail,
+  ShieldCheck,
+  Phone,
 } from 'lucide-react';
 
 interface Bookmark {
@@ -89,6 +99,7 @@ export default function Home() {
   const [credits, setCredits] = useState<number>(5);
   const [planType, setPlanType] = useState<'free' | 'pro'>('free');
   const [showPricingModal, setShowPricingModal] = useState(false);
+  const [showPrivacyModal, setShowPrivacyModal] = useState(false);
 
   // حالة تصفية المجرة المدارية
   const [selectedSource, setSelectedSource] = useState<SourceFilter>('all');
@@ -1773,6 +1784,89 @@ export default function Home() {
           onClose={() => setShowPricingModal(false)}
         />
       )}
+
+      {/* نافذة سياسة الخصوصية */}
+      {showPrivacyModal && (
+        <div
+          className="fixed inset-0 z-50 bg-[#05020d]/85 backdrop-blur-md flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="privacy-title"
+        >
+          <div className="bg-gradient-to-b from-[#1a0d38] to-[#0d061f] border border-amber-400/40 rounded-3xl max-w-md w-full p-6 relative shadow-[0_0_60px_rgba(251,191,36,0.2)]">
+            <div className="flex items-center gap-2 mb-3">
+              <ShieldCheck className="w-5 h-5 text-amber-400" />
+              <h2 id="privacy-title" className="text-lg font-extrabold text-white">
+                {t.footerPrivacyTitle}
+              </h2>
+            </div>
+            <p className="text-sm text-purple-200/85 leading-relaxed mb-6">
+              {t.footerPrivacyText}
+            </p>
+            <button
+              onClick={() => setShowPrivacyModal(false)}
+              className="w-full min-h-11 bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white font-bold py-2.5 rounded-xl cursor-pointer"
+            >
+              {t.footerPrivacyClose}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* تذييل الموقع */}
+      <footer className="relative z-10 border-t border-purple-500/20 bg-[#0d071c]/80 backdrop-blur-xl mt-10">
+        <div className="max-w-6xl mx-auto px-4 py-8 flex flex-col items-center gap-5 text-center">
+          <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm font-semibold">
+            <a
+              href="tel:+905362515878"
+              className="flex items-center gap-1.5 text-amber-300 hover:text-amber-200 transition"
+              dir="ltr"
+            >
+              <Phone className="w-4 h-4" />
+              +905362515878
+            </a>
+            <a
+              href="mailto:saif.masx@gmail.com"
+              className="flex items-center gap-1.5 text-amber-300 hover:text-amber-200 transition"
+            >
+              <Mail className="w-4 h-4" />
+              {t.footerContact}
+            </a>
+            <button
+              onClick={() => setShowPrivacyModal(true)}
+              className="flex items-center gap-1.5 text-purple-200/85 hover:text-white transition cursor-pointer"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              {t.footerPrivacy}
+            </button>
+          </div>
+
+          {/* روابط التواصل مؤقتة للصفحات الرئيسية للمنصات — تُستبدل بروابط حسابات LinkMind الرسمية عندما تتوفر */}
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-purple-200/60">{t.footerFollow}</span>
+            {[
+              { href: 'https://x.com', label: 'X', Icon: XIcon },
+              { href: 'https://www.facebook.com', label: 'Facebook', Icon: FacebookIcon },
+              { href: 'https://www.instagram.com', label: 'Instagram', Icon: InstagramIcon },
+              { href: 'https://t.me', label: 'Telegram', Icon: TelegramIcon },
+              { href: 'https://wa.me/905362515878', label: 'WhatsApp', Icon: WhatsAppIcon },
+            ].map(({ href, label, Icon }) => (
+              <a
+                key={label}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={label}
+                className="w-9 h-9 flex items-center justify-center rounded-full border border-purple-500/30 bg-purple-900/40 text-amber-300 hover:text-amber-200 hover:border-amber-400/60 hover:bg-purple-800/60 transition"
+              >
+                <Icon className="w-4 h-4" />
+              </a>
+            ))}
+          </div>
+
+          <p className="text-xs text-purple-200/60">{t.footerCopyright}</p>
+        </div>
+      </footer>
     </div>
   );
 }
