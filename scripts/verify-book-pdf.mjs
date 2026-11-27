@@ -1,12 +1,14 @@
-// End-to-end verification of the Word -> PDF download (lib/book-reader.ts).
+// End-to-end verification of the book PDF downloads (lib/book-reader.ts):
+// the «تنزيل PDF» summary print (buildBookPrintHtml) and the Word ->
+// PDF document (buildWordToPdfHtml, the «تحويل إلى PDF» button).
 //
 // Run: node scripts/verify-book-pdf.mjs
 //
-// This exercises the EXACT mechanism the «تنزيل PDF» button uses: the
-// printable book document is rendered by headless Chromium and saved
-// as a PDF (the browser's print-to-PDF path — the same path the user's
-// browser takes when they choose «حفظ كملف PDF» from the print
-// dialog). The script then proves the resulting PDF:
+// This exercises the EXACT mechanism both buttons use: the printable
+// document is rendered by headless Chromium and saved as a PDF (the
+// browser's print-to-PDF path — the same path the user's browser takes
+// when they choose «حفظ كملف PDF» from the print dialog). The script
+// then proves each resulting PDF:
 //   1. opens in a real PDF engine (pdfjs-dist, the library the app
 //      already uses for PDF extraction),
 //   2. has at least one page per chapter,
@@ -82,7 +84,7 @@ try {
   process.exit(1);
 }
 const { splitBookIntoChapters, summarizeBookFull } = await import(join(outDir, 'book-summary.js'));
-const { buildBookPrintHtml } = await import(join(outDir, 'book-reader.js'));
+const { buildBookPrintHtml, buildWordToPdfHtml } = await import(join(outDir, 'book-reader.js'));
 
 // Same fake Gemini client as the smoke test (canned per-chapter JSON
 // with idea details), so the PDF is built from a real structured book.
@@ -136,51 +138,66 @@ check('structured book has >= 3 chapters', full.chapters.length >= 3, `${full.ch
 // The print HTML: no auto-print script. The Arabic font comes from
 // the system font stack in the document (Noto Naskh Arabic is
 // installed on this machine), exactly as on a user's machine.
-const html = buildBookPrintHtml({
+const bookHtml = buildBookPrintHtml({
   title: bookTitle,
   chapters: full.chapters,
   lang: 'ar',
   autoPrint: false,
 });
-const htmlPath = join(workDir, 'book.html');
-const pdfPath = join(workDir, 'book.pdf');
-writeFileSync(htmlPath, html);
+const wordHtml = buildWordToPdfHtml({
+  title: bookTitle,
+  chapters: full.chapters,
+  lang: 'ar',
+  autoPrint: false,
+});
 
-try {
-  execFileSync(
-    chromium,
-    [
-      '--headless=new',
-      '--disable-gpu',
-      '--no-sandbox',
-      '--allow-file-access-from-files',
-      '--virtual-time-budget=8000',
-      `--print-to-pdf=${pdfPath}`,
-      '--no-pdf-header-footer',
-      pathToFileURL(htmlPath).href,
-    ],
-    { stdio: 'pipe', timeout: 120000 }
-  );
-} catch (error) {
-  console.error('Chromium print-to-pdf failed:', error.stdout?.toString(), error.stderr?.toString());
-  failures += 1;
-}
-check('pdf file was created', existsSync(pdfPath));
+// Print one HTML document to a real PDF with headless Chromium and
+// prove the PDF: opens in pdfjs, has enough pages, contains every
+// chapter title and idea detail as extractable text, and rasterises
+// page 1 for a visual check of Arabic shaping + RTL.
+async function verifyPrintPdf(tag, html, chapters) {
+  const htmlPath = join(workDir, `${tag}.html`);
+  const pdfPath = join(workDir, `${tag}.pdf`);
+  writeFileSync(htmlPath, html);
 
-if (existsSync(pdfPath)) {
+  try {
+    execFileSync(
+      chromium,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-sandbox',
+        '--allow-file-access-from-files',
+        '--virtual-time-budget=8000',
+        `--print-to-pdf=${pdfPath}`,
+        '--no-pdf-header-footer',
+        pathToFileURL(htmlPath).href,
+      ],
+      { stdio: 'pipe', timeout: 120000 }
+    );
+  } catch (error) {
+    console.error(`Chromium print-to-pdf failed (${tag}):`, error.stdout?.toString(), error.stderr?.toString());
+    failures += 1;
+  }
+  check(`${tag}: pdf file was created`, existsSync(pdfPath));
+  if (!existsSync(pdfPath)) return;
+
   const pdfBytes = readFileSync(pdfPath);
-  check('pdf is non-empty', pdfBytes.length > 1000, `${pdfBytes.length} bytes`);
+  check(`${tag}: pdf is non-empty`, pdfBytes.length > 1000, `${pdfBytes.length} bytes`);
 
-  // 1) pdfinfo: opens and reports pages.
+  // 1) pdfinfo: opens and reports pages. The Word document has a
+  // cover page plus one page per chapter, so it needs one more page
+  // than the summary print.
+  const minPages = tag === 'word' ? chapters.length + 1 : chapters.length;
   let pageCount = 0;
   try {
     const info = execSync(`pdfinfo ${JSON.stringify(pdfPath)}`, { encoding: 'utf8' });
     pageCount = Number(/Pages:\s+(\d+)/.exec(info)?.[1] || 0);
-    console.log(`pdfinfo: ${pageCount} pages`);
+    console.log(`${tag} pdfinfo: ${pageCount} pages`);
   } catch (error) {
     console.error('pdfinfo failed:', error.message);
   }
-  check('pdf has at least one page per chapter', pageCount >= full.chapters.length, `${pageCount} pages / ${full.chapters.length} chapters`);
+  check(`${tag}: pdf has at least one page per chapter`, pageCount >= minPages, `${pageCount} pages / ${chapters.length} chapters`);
 
   // 2) pdfjs-dist opens the file (the same engine the app uses).
   try {
@@ -188,9 +205,9 @@ if (existsSync(pdfPath)) {
     const doc = await pdfjs
       .getDocument({ data: new Uint8Array(pdfBytes), useWorker: false, isEvalSupported: false })
       .promise;
-    check('pdfjs opens the pdf', doc.numPages >= 1, `${doc.numPages} pages`);
+    check(`${tag}: pdfjs opens the pdf`, doc.numPages >= 1, `${doc.numPages} pages`);
   } catch (error) {
-    check('pdfjs opens the pdf', false, String(error));
+    check(`${tag}: pdfjs opens the pdf`, false, String(error));
   }
 
   // 3) pdftotext: the extracted text contains every chapter title and
@@ -204,28 +221,31 @@ if (existsSync(pdfPath)) {
     console.error('pdftotext failed:', error.message);
   }
   const extractedFingerprint = fingerprint(extracted);
-  const missingTitles = full.chapters
+  const missingTitles = chapters
     .map((ch) => ch.title)
     .filter((t) => !extractedFingerprint.includes(fingerprint(t)));
-  check('pdf text contains all chapter titles', missingTitles.length === 0, missingTitles.join(' | '));
-  const missingDetails = full.chapters
+  check(`${tag}: pdf text contains all chapter titles`, missingTitles.length === 0, missingTitles.join(' | '));
+  const missingDetails = chapters
     .flatMap((ch) => ch.ideas.map((idea) => fingerprint(idea.detail.slice(0, 60))))
     .filter((snippet) => snippet.length > 10 && !extractedFingerprint.includes(snippet));
-  check('pdf text contains idea details', missingDetails.length === 0, `${missingDetails.length} missing`);
+  check(`${tag}: pdf text contains idea details`, missingDetails.length === 0, `${missingDetails.length} missing`);
 
   // 4) Rasterise page 1 for a visual check of Arabic shaping + RTL.
   // pdftoppm pads the page number to the width of the total page
   // count (page-01.png for a 10-page PDF), so find the file by prefix.
   try {
-    execSync(`pdftoppm -png -f 1 -l 1 -r 100 ${JSON.stringify(pdfPath)} ${JSON.stringify(join(workDir, 'page'))}`, { stdio: 'pipe' });
-    const pngPath = readdirSync(workDir).find((f) => f.startsWith('page-') && f.endsWith('.png'));
-    check('page 1 rasterised for visual check', Boolean(pngPath));
-    if (pngPath) console.log(`Visual check image: ${join(workDir, pngPath)}`);
+    execSync(`pdftoppm -png -f 1 -l 1 -r 100 ${JSON.stringify(pdfPath)} ${JSON.stringify(join(workDir, `${tag}-page`))}`, { stdio: 'pipe' });
+    const pngPath = readdirSync(workDir).find((f) => f.startsWith(`${tag}-page-`) && f.endsWith('.png'));
+    check(`${tag}: page 1 rasterised for visual check`, Boolean(pngPath));
+    if (pngPath) console.log(`${tag} visual check image: ${join(workDir, pngPath)}`);
   } catch (error) {
-    check('page 1 rasterised for visual check', false, String(error));
+    check(`${tag}: page 1 rasterised for visual check`, false, String(error));
   }
-  console.log(`PDF kept for inspection: ${pdfPath}`);
+  console.log(`${tag} PDF kept for inspection: ${pdfPath}`);
 }
+
+await verifyPrintPdf('book', bookHtml, full.chapters);
+await verifyPrintPdf('word', wordHtml, full.chapters);
 
 rmSync(outDir, { recursive: true, force: true });
 if (failures > 0) {

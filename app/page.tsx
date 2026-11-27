@@ -10,6 +10,7 @@ import { unwrapRedirectUrl } from '@/lib/redirect-unwrap';
 import { decidePdfBookPath, noticeAfterSave } from '@/lib/book-upload';
 import {
   buildBookPrintHtml,
+  buildWordToPdfHtml,
   countBookIdeas,
   parseBookSummary,
   parsePlainSummaryToChapters,
@@ -1027,6 +1028,31 @@ export default function Home() {
   const handleDownloadBookPdf = (item: Bookmark) => {
     const chapters = bookChaptersFor(item);
     const html = buildBookPrintHtml({
+      title: item.title,
+      chapters,
+      lang,
+      siteName: 'LinkMind',
+    });
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      setNotice(t.pdfPopupBlocked);
+      return;
+    }
+    printWindow.document.write(html);
+    printWindow.document.close();
+  };
+
+  // WORD → PDF (2026-11-28): «تحويل إلى PDF» in the book reader, for
+  // Word books only. Same print-engine mechanism as the summary
+  // download above (the browser shapes Arabic correctly; the user
+  // saves a real PDF from the print dialog), but rendered as a
+  // flowing document — title page, then the book's full content as
+  // numbered document sections — instead of a summary report. No
+  // server call and no credit: this is a local utility on the saved
+  // content, not a summary.
+  const handleConvertWordToPdf = (item: Bookmark) => {
+    const chapters = bookChaptersFor(item);
+    const html = buildWordToPdfHtml({
       title: item.title,
       chapters,
       lang,
@@ -2118,13 +2144,24 @@ export default function Home() {
               <span className="text-xs font-bold text-purple-200/85">
                 {t.bookChapters}: {bookChaptersFor(readerBook).length}
               </span>
-              <button
-                onClick={() => handleDownloadBookPdf(readerBook)}
-                className="text-xs bg-amber-500 hover:bg-amber-400 text-[#2e1065] font-bold px-3 py-2 min-h-9 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
-              >
-                <Download className="w-4 h-4" />
-                <span>{t.downloadBookPdf}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                {detectSource(readerBook.url) === 'word' && (
+                  <button
+                    onClick={() => handleConvertWordToPdf(readerBook)}
+                    className="text-xs border border-amber-400/60 bg-purple-800/50 hover:bg-purple-800/80 text-amber-300 font-bold px-3 py-2 min-h-9 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>{t.convertWordToPdf}</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => handleDownloadBookPdf(readerBook)}
+                  className="text-xs bg-amber-500 hover:bg-amber-400 text-[#2e1065] font-bold px-3 py-2 min-h-9 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>{t.downloadBookPdf}</span>
+                </button>
+              </div>
             </div>
 
             <div className="overflow-y-auto px-5 py-4 space-y-3">

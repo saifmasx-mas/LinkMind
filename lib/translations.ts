@@ -68,6 +68,7 @@ export const translations = {
     bookChapters: 'الفصول',
     bookIdeas: 'الأفكار',
     downloadBookPdf: 'تنزيل PDF',
+    convertWordToPdf: 'تحويل إلى PDF',
     bookTruncatedNotice:
       'تعذّر إرسال نص الكتاب كاملاً إلى الخادم، فلم يتم إنشاء ملخص. حاول رفع الكتاب مرة أخرى، ولم يُخصم أي رصيد.',
     pdfPopupBlocked:
@@ -186,6 +187,7 @@ export const translations = {
     bookChapters: 'Bölümler',
     bookIdeas: 'Fikirler',
     downloadBookPdf: 'PDF İndir',
+    convertWordToPdf: 'PDF’ye Dönüştür',
     bookTruncatedNotice:
       'Kitabın metni sunucuya tam olarak gönderilemedi, bu yüzden özet oluşturulmadı. Kitabı tekrar yüklemeyi deneyin; kredi düşülmedi.',
     pdfPopupBlocked:
@@ -306,6 +308,7 @@ export const translations = {
     bookChapters: 'Chapters',
     bookIdeas: 'Ideas',
     downloadBookPdf: 'Download PDF',
+    convertWordToPdf: 'Convert to PDF',
     bookTruncatedNotice:
       'The book text could not be sent to the server in full, so no summary was created. Please upload the book again; no credit was deducted.',
     pdfPopupBlocked:

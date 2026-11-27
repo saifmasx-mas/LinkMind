@@ -378,3 +378,147 @@ export function buildBookPrintHtml(opts: PrintBookOptions): string {
 </body>
 </html>`;
 }
+
+// WORD → PDF (2026-11-28): a second, document-style export for Word
+// books — «تحويل إلى PDF» in the book reader. The existing
+// buildBookPrintHtml is a summary report (cover + boxed idea cards);
+// this one reads like the Word document itself converted to PDF: a
+// title page, then the book's full content as flowing document text
+// — every chapter a numbered section, every idea a numbered
+// paragraph (bold lead + detail as the paragraph body), justified,
+// A4, with a running footer on every page.
+//
+// WHAT IT CONTAINS, HONESTLY: the book's full stored content — the
+// complete chapter-by-chapter summary (every idea with its detail).
+// The raw .docx text is NOT stored in the database (only the summary
+// travels to the server), so the original Word text cannot be
+// reproduced for already-saved books, and the original .docx layout
+// (fonts, images, tables) is never preserved: Vercel serverless
+// cannot run Word/LibreOffice and binary PDF libraries draw Arabic
+// disconnected. Like the summary print, this is plain HTML+CSS
+// rendered by the browser's print engine, so Arabic is shaped
+// correctly and the saved PDF has real, selectable text.
+export interface WordToPdfOptions {
+  title: string;
+  chapters: BookChapterData[];
+  /** 'ar' | 'tr' | 'en' — controls dir and the fixed labels. */
+  lang: string;
+  siteName?: string;
+  /** Emit the auto-print script (browser use). Off for tests. */
+  autoPrint?: boolean;
+}
+
+function wordToPdfLabels(lang: string): {
+  convertedFrom: string;
+  footer: string;
+  empty: string;
+} {
+  if (lang === 'tr') {
+    return {
+      convertedFrom: 'Word belgesinden PDF’ye dönüştürüldü',
+      footer: 'Word dosyasından LinkMind ile oluşturuldu',
+      empty: 'Bu kitapta dönüştürülecek içerik yok.',
+    };
+  }
+  if (lang === 'en') {
+    return {
+      convertedFrom: 'Converted from a Word document to PDF',
+      footer: 'Created from a Word file with LinkMind',
+      empty: 'This book has no content to convert.',
+    };
+  }
+  return {
+    convertedFrom: 'مستند Word محوَّل إلى PDF',
+    footer: 'أُنشئ من ملف Word عبر LinkMind',
+    empty: 'لا يوجد محتوى في هذا الكتاب لتحويله.',
+  };
+}
+
+export function buildWordToPdfHtml(opts: WordToPdfOptions): string {
+  const lang = opts.lang || 'ar';
+  const dir = lang === 'ar' ? 'rtl' : 'ltr';
+  const labels = wordToPdfLabels(lang);
+  const siteName = opts.siteName || 'LinkMind';
+  const today = new Date().toLocaleDateString(
+    lang === 'ar' ? 'ar' : lang === 'tr' ? 'tr' : 'en'
+  );
+
+  const chaptersHtml = opts.chapters
+    .map((chapter, chapterIndex) => {
+      const ideasHtml = chapter.ideas
+        .map((idea, ideaIndex) => {
+          return `<div class="idea">
+          <p class="idea-text"><span class="idea-no">${chapterIndex + 1}.${ideaIndex + 1}</span> ${escapeHtml(idea.text)}</p>
+          <p class="idea-detail">${escapeHtml(idea.detail)}</p>
+        </div>`;
+        })
+        .join('\n');
+      return `<section class="chapter">
+      <h2><span class="chapter-no">${chapterIndex + 1}</span> ${escapeHtml(chapter.title)}</h2>
+      ${ideasHtml}
+    </section>`;
+    })
+    .join('\n');
+
+  const autoPrintScript =
+    opts.autoPrint === false
+      ? ''
+      : `<script>
+      window.onload = function () {
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(function () { window.print(); });
+        } else {
+          window.print();
+        }
+      };
+    </script>`;
+
+  return `<!DOCTYPE html>
+<html lang="${lang}" dir="${dir}">
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(opts.title)} - ${escapeHtml(siteName)}</title>
+<style>
+  * { box-sizing: border-box; }
+  /* Same Arabic font stack as the summary print: the browser shapes
+     Arabic correctly with the system's own naskh font. */
+  body { font-family: 'Noto Naskh Arabic', 'Traditional Arabic', 'Amiri', 'Segoe UI', serif; color: #1e1b4b; line-height: 2; padding: 0; margin: 0; }
+  @page { size: A4; margin: 20mm 18mm 22mm; }
+  .cover { text-align: center; padding: 56px 24px 40px; page-break-after: always; }
+  .cover .brand { font-size: 15px; font-weight: 700; color: #7e22ce; letter-spacing: 1px; }
+  .cover h1 { font-size: 32px; line-height: 1.4; color: #2e1065; margin: 16px 0 10px; }
+  .cover .converted { font-size: 16px; color: #6b21a8; }
+  .cover .rule { width: 72px; height: 3px; background: #f59e0b; margin: 22px auto 0; border-radius: 2px; }
+  .cover .meta { font-size: 12px; color: #6b7280; margin-top: 14px; }
+  .chapter { margin-bottom: 28px; }
+  .chapter:first-of-type { page-break-before: avoid; }
+  .chapter + .chapter { page-break-before: always; }
+  .chapter h2 { font-size: 22px; color: #2e1065; margin: 0 0 14px; line-height: 1.5; border-bottom: 2px solid #e9d5ff; padding-bottom: 8px; }
+  .chapter-no { display: inline-block; min-width: 34px; height: 34px; line-height: 34px; text-align: center; border-radius: 50%; background: #7e22ce; color: #fff; font-size: 16px; font-weight: 700; margin-inline-end: 8px; }
+  .idea { margin-bottom: 18px; page-break-inside: avoid; }
+  .idea-text { font-weight: 700; color: #3b0764; font-size: 15px; line-height: 1.9; margin: 0 0 4px; text-align: justify; }
+  .idea-no { color: #b45309; font-weight: 700; margin-inline-end: 4px; }
+  .idea-detail { font-size: 14px; color: #374151; margin: 0; line-height: 2; text-align: justify; }
+  .empty { font-size: 15px; color: #6b7280; text-align: center; margin-top: 40px; }
+  .end-note { text-align: center; font-size: 12px; color: #6b7280; border-top: 1px solid #e9d5ff; padding-top: 12px; margin-top: 32px; }
+  .running-footer { position: fixed; bottom: 0; left: 0; right: 0; text-align: center; font-size: 11px; color: #9ca3af; border-top: 1px solid #e9d5ff; padding-top: 6px; }
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+  <div class="cover">
+    <div class="brand">${escapeHtml(siteName)}</div>
+    <h1>${escapeHtml(opts.title)}</h1>
+    <div class="converted">${escapeHtml(labels.convertedFrom)}</div>
+    <div class="rule"></div>
+    <div class="meta">${escapeHtml(today)}</div>
+  </div>
+  ${chaptersHtml || `<p class="empty">${escapeHtml(labels.empty)}</p>`}
+  <div class="end-note">${escapeHtml(labels.footer)} — ${escapeHtml(siteName)}</div>
+  <div class="running-footer">${escapeHtml(opts.title)} — ${escapeHtml(siteName)}</div>
+  ${autoPrintScript}
+</body>
+</html>`;
+}
