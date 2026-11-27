@@ -2038,6 +2038,13 @@ export default function Home() {
               {t.footerPrivacy}
             </button>
             <a
+              href="/privacy"
+              className="flex items-center gap-1.5 text-purple-200/85 hover:text-white transition cursor-pointer"
+            >
+              <FileText className="w-4 h-4" />
+              {t.footerPrivacyPage}
+            </a>
+            <a
               href="/presentation"
               className="flex items-center gap-1.5 text-purple-200/85 hover:text-white transition cursor-pointer"
             >
