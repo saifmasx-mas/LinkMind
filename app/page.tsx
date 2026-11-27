@@ -444,7 +444,12 @@ export default function Home() {
   const handleAuth = async (isSignUp: boolean) => {
     setAuthError('');
     setAuthMessage('');
-    if (!email || !password) return;
+    // كان النقر بحقول فارغة يعود بصمت دون أي رسالة، فيظن المستخدم
+    // أن زر إنشاء الحساب معطّل — أظهر رسالة واضحة بدل ذلك.
+    if (!email || !password) {
+      setAuthError(t.authFieldsRequired);
+      return;
+    }
 
     // Cloudflare Turnstile: no auth call before the human check passes.
     if (!(await verifyTurnstile())) return;
@@ -463,7 +468,13 @@ export default function Home() {
     setAuthBusy(false);
     if (error) {
       console.error('Auth failed:', error.message);
-      setAuthError(genericAuthError());
+      // «البريد غير مؤكد» حالة قابلة للتصرف (افتح بريدك وأكّد)،
+      // فتستحق رسالة خاصة بدل رسالة الخطأ العامة.
+      setAuthError(
+        error.message.includes('Email not confirmed')
+          ? t.emailNotConfirmed
+          : genericAuthError()
+      );
       // The token was already spent on the server check, so it cannot be
       // reused for the next attempt.
       resetTurnstile();
@@ -1385,6 +1396,9 @@ export default function Home() {
                   </svg>
                   <span>{t.googleBtn}</span>
                 </button>
+                {/* زر جوجل ينشئ الحساب تلقائياً عند أول دخول، فوضّح
+                    أنه للدخول أو لإنشاء حساب جديد. */}
+                <p className="text-center text-xs text-purple-200/70">{t.googleBtnNote}</p>
               </div>
             </div>
           </main>
