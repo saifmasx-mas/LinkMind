@@ -50,6 +50,15 @@ export const translations = {
     emailNotConfirmed:
       'لم تؤكد بريدك بعد — افتح بريدك واضغط رابط التأكيد ثم حاول تسجيل الدخول.',
     googleBtnNote: 'للدخول أو إنشاء حساب جديد',
+    signupTitle: 'إنشاء حساب جديد',
+    creatingAccount: 'جاري إنشاء الحساب...',
+    signupFailed:
+      'تعذّر إنشاء الحساب. تحقق من بريدك الإلكتروني وكلمة المرور وحاول مجدداً.',
+    turnstileLoadFailed: 'تعذّر التحقق الأمني، حدّث الصفحة وحاول مجدداً.',
+    googleCreatesAccount: 'جوجل ينشئ حسابك تلقائياً دون الحاجة إلى كلمة مرور.',
+    googleFailed: 'تعذّرت المتابعة باستخدام Google. حاول مجدداً.',
+    alreadyHaveAccount: 'لديك حساب بالفعل؟',
+    backToLogin: 'سجّل الدخول',
     askCostsCredit: 'كل سؤال يخصم نقطة واحدة من رصيدك.',
     uploadBookCostsCredit: 'رفع كتاب يخصم نقطة واحدة من رصيدك.',
     // قارئ الكتاب (2026-11-27): عرض الملخص فصلاً بفصل مع الأفكار القابلة للتوسيع.
@@ -157,6 +166,17 @@ export const translations = {
     emailNotConfirmed:
       'E-postanızı henüz doğrulamadınız — e-postanızı açıp doğrulama bağlantısına dokunun, ardından tekrar giriş yapın.',
     googleBtnNote: 'Giriş yapmak veya yeni hesap oluşturmak için',
+    signupTitle: 'Yeni Hesap Oluştur',
+    creatingAccount: 'Hesap oluşturuluyor...',
+    signupFailed:
+      'Hesap oluşturulamadı. E-posta adresinizi ve şifrenizi kontrol edip tekrar deneyin.',
+    turnstileLoadFailed:
+      'Güvenlik doğrulaması yüklenemedi. Sayfayı yenileyip tekrar deneyin.',
+    googleCreatesAccount:
+      'Google, şifre gerekmeden hesabınızı otomatik olarak oluşturur.',
+    googleFailed: 'Google ile devam edilemedi. Lütfen tekrar deneyin.',
+    alreadyHaveAccount: 'Zaten bir hesabınız var mı?',
+    backToLogin: 'Giriş Yap',
     askCostsCredit: 'Her soru kredinizden 1 kredi düşer.',
     uploadBookCostsCredit: 'Kitap yüklemek kredinizden 1 kredi düşer.',
     openBook: 'Kitabı Aç',
@@ -266,6 +286,17 @@ export const translations = {
     emailNotConfirmed:
       'You have not confirmed your email yet — open your email, tap the confirmation link, then try signing in again.',
     googleBtnNote: 'To sign in or create a new account',
+    signupTitle: 'Create a New Account',
+    creatingAccount: 'Creating your account...',
+    signupFailed:
+      'Could not create your account. Check your email and password and try again.',
+    turnstileLoadFailed:
+      'The security check could not load. Refresh the page and try again.',
+    googleCreatesAccount:
+      'Google creates your account automatically — no password needed.',
+    googleFailed: 'Could not continue with Google. Please try again.',
+    alreadyHaveAccount: 'Already have an account?',
+    backToLogin: 'Sign in',
     askCostsCredit: 'Each question deducts 1 credit from your balance.',
     uploadBookCostsCredit: 'Uploading a book deducts 1 credit from your balance.',
     openBook: 'Open the Book',

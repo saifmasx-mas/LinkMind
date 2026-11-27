@@ -104,8 +104,6 @@ export default function Home() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
-  // رسالة نجاح بعد إنشاء الحساب (تأكيد البريد أو تسجيل دخول مباشر).
-  const [authMessage, setAuthMessage] = useState('');
 
   // Cloudflare Turnstile (2026-11-24): the "are you a robot" check on the
   // login page. The public site key comes from the env var; when it is
@@ -441,11 +439,16 @@ export default function Home() {
     }
   };
 
-  const handleAuth = async (isSignUp: boolean) => {
+  // SIGNUP PAGE (2026-11-28): account creation moved to the standalone
+  // /signup page — this handler is login-only now. The old combined
+  // button ran signUp in place and, with empty fields or a missing
+  // Turnstile token, did nothing visible, so users thought the button
+  // was dead. The signup logic (incl. its success message and admin
+  // notify) now lives in app/signup/page.tsx.
+  const handleLogin = async () => {
     setAuthError('');
-    setAuthMessage('');
     // كان النقر بحقول فارغة يعود بصمت دون أي رسالة، فيظن المستخدم
-    // أن زر إنشاء الحساب معطّل — أظهر رسالة واضحة بدل ذلك.
+    // أن الزر معطّل — أظهر رسالة واضحة بدل ذلك.
     if (!email || !password) {
       setAuthError(t.authFieldsRequired);
       return;
@@ -456,14 +459,7 @@ export default function Home() {
 
     // التصميم (2026-11-24): نص واضح أثناء تسجيل الدخول بدل دوّارة صامتة.
     setAuthBusy(true);
-    const { data, error } = isSignUp
-      ? await supabase.auth.signUp({
-          email,
-          password,
-          // I4: email confirmation must land on the dedicated callback page.
-          options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
-        })
-      : await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
 
     setAuthBusy(false);
     if (error) {
@@ -478,27 +474,11 @@ export default function Home() {
       // The token was already spent on the server check, so it cannot be
       // reused for the next attempt.
       resetTurnstile();
-    } else if (isSignUp) {
-      // ADMIN SIGNUP NOTIFY: tell the server right away so the admin
-      // gets a Telegram message. Works even before email confirmation,
-      // because the server verifies the new account itself.
-      notifySignup(email);
-      // Tell the user what happened — before this fix signup showed
-      // nothing at all. With a session the user is signed in already
-      // (the library view opens, so the message goes to the notice bar
-      // there); without one they must confirm their email first, so the
-      // message stays on the login screen.
-      if (data?.session) {
-        setNotice(t.signupSuccessSignedIn);
-      } else {
-        setAuthMessage(t.signupSuccessConfirmEmail);
-      }
     }
   };
 
   const handleGoogleLogin = async () => {
     setAuthError('');
-    setAuthMessage('');
     // Cloudflare Turnstile: the Google button needs the human check too.
     if (!(await verifyTurnstile())) return;
     setAuthBusy(true);
@@ -1288,12 +1268,6 @@ export default function Home() {
                 </div>
               )}
 
-              {authMessage && (
-                <div className="mb-4 p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-xs text-emerald-200 text-center">
-                  {authMessage}
-                </div>
-              )}
-
               <div className="space-y-4">
                 <label htmlFor="login-email" className="sr-only">
                   {t.emailPlaceholder}
@@ -1335,7 +1309,9 @@ export default function Home() {
                 </div>
 
                 {/* Cloudflare Turnstile (2026-11-24): the "are you a robot"
-                    check. Hidden when the site key is not configured. */}
+                    check. Hidden when the site key is not configured.
+                    If the widget fails to load, onError shows a clear
+                    message instead of failing silently. */}
                 {turnstileSiteKey && (
                   <div className="flex justify-center pt-1">
                     <TurnstileWidget
@@ -1343,26 +1319,33 @@ export default function Home() {
                       siteKey={turnstileSiteKey}
                       onVerify={(token) => setTurnstileToken(token)}
                       onExpire={() => setTurnstileToken(null)}
-                      onError={() => setTurnstileToken(null)}
+                      onError={() => {
+                        setTurnstileToken(null);
+                        setAuthError(t.turnstileLoadFailed);
+                      }}
                     />
                   </div>
                 )}
 
                 <div className="flex flex-col gap-2.5 pt-2">
                   <button
-                    onClick={() => handleAuth(false)}
+                    onClick={handleLogin}
                     disabled={authBusy}
                     className="w-full bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:from-amber-300 hover:to-yellow-400 text-[#180a2e] font-extrabold py-3 rounded-xl transition cursor-pointer shadow-[0_0_20px_rgba(251,191,36,0.35)] disabled:opacity-60"
                   >
                     {authBusy ? t.signingIn : t.loginBtn}
                   </button>
-                  <button
-                    onClick={() => handleAuth(true)}
-                    disabled={authBusy}
-                    className="w-full bg-purple-900/50 hover:bg-purple-800/60 text-purple-100 border border-purple-500/30 font-semibold py-3 rounded-xl transition cursor-pointer disabled:opacity-60"
+                  {/* SIGNUP PAGE (2026-11-28): account creation lives on
+                      its own /signup page now — this button navigates
+                      there instead of running signUp in place, where
+                      it did nothing visible on empty fields or a
+                      missing Turnstile token. */}
+                  <a
+                    href="/signup"
+                    className="w-full bg-purple-900/50 hover:bg-purple-800/60 text-purple-100 border border-purple-500/30 font-semibold py-3 rounded-xl transition cursor-pointer text-center block"
                   >
                     {t.signupBtn}
-                  </button>
+                  </a>
                 </div>
 
                 <div className="relative my-3 flex items-center justify-center">
@@ -1397,8 +1380,10 @@ export default function Home() {
                   <span>{t.googleBtn}</span>
                 </button>
                 {/* زر جوجل ينشئ الحساب تلقائياً عند أول دخول، فوضّح
-                    أنه للدخول أو لإنشاء حساب جديد. */}
+                    أنه للدخول أو لإنشاء حساب جديد، وأنه لا يحتاج
+                    إلى كلمة مرور. */}
                 <p className="text-center text-xs text-purple-200/70">{t.googleBtnNote}</p>
+                <p className="text-center text-xs text-purple-200/60">{t.googleCreatesAccount}</p>
               </div>
             </div>
           </main>
