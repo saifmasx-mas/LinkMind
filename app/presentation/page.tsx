@@ -13,6 +13,7 @@ import {
   Cpu,
   Database,
   FileText,
+  FileDown,
   Gauge,
   Globe,
   GraduationCap,
@@ -140,6 +141,7 @@ export default function PresentationPage() {
           <ul className="space-y-3 list-none">
             <Item icon={Globe} title="مصادر متعددة" text="YouTube و TikTok و X والمقالات والمدونات وملفات PDF و Word. أما روابط Facebook و Instagram فتُقبل لكن محتواها محمي غالباً، فلا يتوفر لها ملخص كامل في أغلب الحالات." />
             <Item icon={FileText} title="ملخصات شاملة" text="الكتب والمقالات الطويلة تُلخَّص قسماً بقسم ثم تُدمج في ملخص واحد كامل." />
+            <Item icon={FileDown} title="تحويل Word إلى PDF" text="زر في قارئ الكتاب يحوّل كتاب Word إلى ملف PDF نضيف: صفحة غلاف، وكل فصل في صفحة، والأفكار مرقّمة — من دون خصم أي رصيد. يحوّل المحتوى المحفوظ في مكتبتك، لا تنسيق الملف الأصلي." />
             <Item icon={Bot} title="بوت تيليجرام" text="حفظ الروابط من تيليجرام، ووكيل دعم يجيب عن أسئلة العملاء ويحوّل نية الشراء إلى صاحب الموقع." />
             <Item icon={Bell} title="إشعارات المسؤول" text="إشعار فوري عند كل تسجيل جديد، وصفحة «المشتركون الجدد» للمسؤول فقط." />
             <Item icon={Languages} title="ثلاث لغات" text="العربية والتركية والإنجليزية في كل الواجهة." />
