@@ -46,6 +46,10 @@ export const translations = {
     signupSuccessSignedIn: 'تم إنشاء حسابك وتسجيل دخولك بنجاح. أهلاً بك في LinkMind!',
     signupSuccessConfirmEmail:
       'تم إنشاء حسابك. تحقق من بريدك الإلكتروني لتأكيد الحساب ثم سجّل الدخول.',
+    authFieldsRequired: 'اكتب بريدك الإلكتروني وكلمة المرور أولاً.',
+    emailNotConfirmed:
+      'لم تؤكد بريدك بعد — افتح بريدك واضغط رابط التأكيد ثم حاول تسجيل الدخول.',
+    googleBtnNote: 'للدخول أو إنشاء حساب جديد',
     askCostsCredit: 'كل سؤال يخصم نقطة واحدة من رصيدك.',
     uploadBookCostsCredit: 'رفع كتاب يخصم نقطة واحدة من رصيدك.',
     // قارئ الكتاب (2026-11-27): عرض الملخص فصلاً بفصل مع الأفكار القابلة للتوسيع.
@@ -149,6 +153,10 @@ export const translations = {
     signupSuccessSignedIn: 'Hesabınız oluşturuldu ve giriş yaptınız. LinkMind\'a hoş geldiniz!',
     signupSuccessConfirmEmail:
       'Hesabınız oluşturuldu. Hesabınızı doğrulamak için e-postanızı kontrol edin, ardından giriş yapın.',
+    authFieldsRequired: 'Önce e-posta adresinizi ve şifrenizi girin.',
+    emailNotConfirmed:
+      'E-postanızı henüz doğrulamadınız — e-postanızı açıp doğrulama bağlantısına dokunun, ardından tekrar giriş yapın.',
+    googleBtnNote: 'Giriş yapmak veya yeni hesap oluşturmak için',
     askCostsCredit: 'Her soru kredinizden 1 kredi düşer.',
     uploadBookCostsCredit: 'Kitap yüklemek kredinizden 1 kredi düşer.',
     openBook: 'Kitabı Aç',
@@ -254,6 +262,10 @@ export const translations = {
     signupSuccessSignedIn: 'Your account was created and you are signed in. Welcome to LinkMind!',
     signupSuccessConfirmEmail:
       'Your account was created. Check your email to confirm your account, then sign in.',
+    authFieldsRequired: 'Enter your email and password first.',
+    emailNotConfirmed:
+      'You have not confirmed your email yet — open your email, tap the confirmation link, then try signing in again.',
+    googleBtnNote: 'To sign in or create a new account',
     askCostsCredit: 'Each question deducts 1 credit from your balance.',
     uploadBookCostsCredit: 'Uploading a book deducts 1 credit from your balance.',
     openBook: 'Open the Book',
