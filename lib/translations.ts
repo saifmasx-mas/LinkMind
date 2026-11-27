@@ -86,6 +86,7 @@ export const translations = {
     logoutBtn: 'خروج',
     footerContact: 'اتصل بنا',
     footerPrivacy: 'سياسة الخصوصية',
+    footerPrivacyPage: 'صفحة سياسة الخصوصية',
     footerPrivacyTitle: 'سياسة الخصوصية',
     footerPrivacyText:
       'يحفظ LinkMind روابطك وكتبك وملخصاتها في حسابك الخاص فقط، ولا يشاركها مع أي شخص أو جهة أخرى. بياناتك تبقى لك وحدك.',
@@ -189,6 +190,7 @@ export const translations = {
     logoutBtn: 'Çıkış',
     footerContact: 'Bize Ulaşın',
     footerPrivacy: 'Gizlilik Politikası',
+    footerPrivacyPage: 'Gizlilik Politikası Sayfası',
     footerPrivacyTitle: 'Gizlilik Politikası',
     footerPrivacyText:
       'LinkMind, bağlantılarınızı, kitaplarınızı ve özetlerinizi yalnızca kendi hesabınızda saklar ve hiç kimseyle paylaşmaz. Verileriniz yalnızca size aittir.',
@@ -293,6 +295,7 @@ export const translations = {
     logoutBtn: 'Logout',
     footerContact: 'Contact Us',
     footerPrivacy: 'Privacy Policy',
+    footerPrivacyPage: 'Privacy Policy Page',
     footerPrivacyTitle: 'Privacy Policy',
     footerPrivacyText:
       'LinkMind stores your links, books and their summaries in your own account only, and never shares them with anyone else. Your data stays yours alone.',
